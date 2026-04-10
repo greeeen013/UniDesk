@@ -5,10 +5,13 @@ into trigger zones and computes client-space coordinates.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..common.config import MonitorRect, VirtualPlacement
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,6 +97,11 @@ class EdgeDetector:
         # Replace existing zone for this client
         self._zones = [z for z in self._zones if z.client_id != placement.client_id]
         self._zones.append(zone)
+        log.debug(
+            "Virtual zone set for %s: server-space rect=(%d,%d)-(%d,%d), edge=%s",
+            placement.client_id, rect.left, rect.top, rect.right, rect.bottom,
+            placement.anchor_edge,
+        )
 
     def remove_client(self, client_id: str) -> None:
         self._zones = [z for z in self._zones if z.client_id != client_id]
@@ -106,6 +114,7 @@ class EdgeDetector:
         for zone in self._zones:
             if zone.rect.contains(x, y):
                 client_x, client_y = self._translate(x, y, zone)
+                log.debug("hit_test(%d, %d): HIT zone %s → client(%d, %d)", x, y, zone.client_id, client_x, client_y)
                 return zone.client_id, client_x, client_y
         return None
 

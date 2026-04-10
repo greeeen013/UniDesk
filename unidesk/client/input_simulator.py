@@ -110,9 +110,8 @@ class MouseSimulator:
     def move_absolute(self, x: int, y: int) -> None:
         """Move cursor to absolute position (in client monitor coords)."""
         vx, vy, vw, vh = _get_virtual_desktop()
-        # Normalize to [0, 65535] over the full virtual desktop
-        norm_x = int((x - vx) * 65535 / vw) if vw else 0
-        norm_y = int((y - vy) * 65535 / vh) if vh else 0
+        norm_x = int((x - vx) * 65535 / (vw - 1)) if vw > 1 else 0
+        norm_y = int((y - vy) * 65535 / (vh - 1)) if vh > 1 else 0
         inp = _INPUT(
             type=INPUT_MOUSE,
             _input=_INPUT_UNION(mi=_MOUSEINPUT(
