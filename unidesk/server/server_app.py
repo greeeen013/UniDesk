@@ -348,8 +348,12 @@ class ServerApp:
             client.send(proto.make_control_grant())
         log.info("Control granted to %s", client_id)
 
-        if self.hide_mouse:
-            self._teleport_to_corner()
+        # NOTE: ShowCursor(False) above already hides the cursor visually.
+        # We must NOT teleport the cursor elsewhere (e.g. to a corner)
+        # because delta tracking relies on the cursor being at the center
+        # of the anchor monitor. Windows clamps coordinates at the virtual
+        # desktop boundary, so from a corner only up/left deltas are
+        # possible — down/right movement is lost entirely.
 
     def _teleport_to_corner(self) -> None:
         """Teleport server mouse to bottom-right corner of virtual desktop."""
