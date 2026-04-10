@@ -27,34 +27,57 @@ def compute_virtual_rect(
     placement: VirtualPlacement,
     server_monitors: list[MonitorRect],
     client_monitor: MonitorRect,
+    scale_to_snap: bool = False,
 ) -> MonitorRect:
     """Compute where the virtual monitor sits in the server's unified coordinate space."""
     anchor = server_monitors[placement.anchor_monitor_id]
     edge = placement.anchor_edge
     off = placement.offset_pixels
 
-    if edge == "right":
-        left = anchor.right
-        top = anchor.top + off
-        right = left + client_monitor.width
-        bottom = top + client_monitor.height
-    elif edge == "left":
-        right = anchor.left
-        left = right - client_monitor.width
-        top = anchor.top + off
-        bottom = top + client_monitor.height
-    elif edge == "bottom":
-        top = anchor.bottom
-        bottom = top + client_monitor.height
-        left = anchor.left + off
-        right = left + client_monitor.width
-    elif edge == "top":
-        bottom = anchor.top
-        top = bottom - client_monitor.height
-        left = anchor.left + off
-        right = left + client_monitor.width
+    if scale_to_snap:
+        # Scale the trigger zone to match the anchor monitor's dimension on the shared edge.
+        if edge in ("top", "bottom"):
+            left = anchor.left
+            right = anchor.right
+            if edge == "bottom":
+                top = anchor.bottom
+                bottom = top + client_monitor.height
+            else: # top
+                bottom = anchor.top
+                top = bottom - client_monitor.height
+        else: # left, right
+            top = anchor.top
+            bottom = anchor.bottom
+            if edge == "right":
+                left = anchor.right
+                right = left + client_monitor.width
+            else: # left
+                right = anchor.left
+                left = right - client_monitor.width
     else:
-        raise ValueError(f"Unknown anchor_edge: {edge!r}")
+        # Original logic: trigger zone matches client monitor resolution.
+        if edge == "right":
+            left = anchor.right
+            top = anchor.top + off
+            right = left + client_monitor.width
+            bottom = top + client_monitor.height
+        elif edge == "left":
+            right = anchor.left
+            left = right - client_monitor.width
+            top = anchor.top + off
+            bottom = top + client_monitor.height
+        elif edge == "bottom":
+            top = anchor.bottom
+            bottom = top + client_monitor.height
+            left = anchor.left + off
+            right = left + client_monitor.width
+        elif edge == "top":
+            bottom = anchor.top
+            top = bottom - client_monitor.height
+            left = anchor.left + off
+            right = left + client_monitor.width
+        else:
+            raise ValueError(f"Unknown anchor_edge: {edge!r}")
 
     return MonitorRect(
         id=client_monitor.id,
@@ -72,8 +95,9 @@ class EdgeDetector:
     which client (if any) should receive control.
     """
 
-    def __init__(self, server_monitors: list[MonitorRect]) -> None:
+    def __init__(self, server_monitors: list[MonitorRect], scale_to_snap: bool = False) -> None:
         self._server_monitors = server_monitors
+        self.scale_to_snap = scale_to_snap
         self._zones: list[VirtualZone] = []
 
     def update_server_monitors(self, monitors: list[MonitorRect]) -> None:
@@ -87,7 +111,7 @@ class EdgeDetector:
         client_monitor: MonitorRect,
     ) -> None:
         """Add or update the virtual zone for a client."""
-        rect = compute_virtual_rect(placement, self._server_monitors, client_monitor)
+        rect = compute_virtual_rect(placement, self._server_monitors, client_monitor, scale_to_snap=self.scale_to_snap)
         zone = VirtualZone(
             client_id=placement.client_id,
             rect=rect,
@@ -158,7 +182,8 @@ class EdgeDetector:
         rebuilt = []
         for zone in self._zones:
             rect = compute_virtual_rect(
-                zone.placement, self._server_monitors, zone.client_monitor
+                zone.placement, self._server_monitors, zone.client_monitor,
+                scale_to_snap=self.scale_to_snap
             )
             rebuilt.append(VirtualZone(
                 client_id=zone.client_id,

@@ -35,12 +35,13 @@ log = logging.getLogger(__name__)
 
 
 class ServerApp:
-    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0) -> None:
+    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0, scale_to_snap: bool = False) -> None:
         self.port = port
         self.sensitivity = sensitivity
+        self.scale_to_snap = scale_to_snap
         self._monitors: list[MonitorRect] = []
         self._client_mgr = ClientManager()
-        self._edge = EdgeDetector([])
+        self._edge = EdgeDetector([], scale_to_snap=scale_to_snap)
         self._capture = InputCapture()
         self._clipboard = ClipboardServer(on_change=self._on_clipboard_change)
         self._sel = selectors.DefaultSelector()
