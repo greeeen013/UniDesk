@@ -48,19 +48,52 @@ class ClipboardClient:
         self._last_text = text
 
     def _message_loop(self) -> None:
-        WNDPROC = ctypes.WINFUNCTYPE(
-            ctypes.c_ssize_t,      # LRESULT
-            ctypes.wintypes.HWND,  # hwnd
-            ctypes.c_uint,         # msg
-            ctypes.c_size_t,       # wParam (WPARAM — pointer-sized unsigned)
-            ctypes.c_ssize_t,      # lParam (LPARAM — pointer-sized signed)
-        )
-
         user32 = ctypes.windll.user32
-        user32.DefWindowProcW.restype = ctypes.c_ssize_t
-        user32.DefWindowProcW.argtypes = [
-            ctypes.wintypes.HWND, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t
+        kernel32 = ctypes.windll.kernel32
+
+        # ------------------------------------------------------------------
+        # API Signatures (Critical for 64-bit compatibility)
+        # ------------------------------------------------------------------
+        HWND = ctypes.wintypes.HWND
+        LPARAM = ctypes.c_ssize_t
+        WPARAM = ctypes.c_size_t
+        LRESULT = ctypes.c_ssize_t
+
+        WNDPROC = ctypes.WINFUNCTYPE(LRESULT, HWND, ctypes.c_uint, WPARAM, LPARAM)
+
+        user32.DefWindowProcW.restype = LRESULT
+        user32.DefWindowProcW.argtypes = [HWND, ctypes.c_uint, WPARAM, LPARAM]
+
+        user32.RegisterClassExW.restype = ctypes.wintypes.ATOM
+        user32.CreateWindowExW.restype = HWND
+        user32.CreateWindowExW.argtypes = [
+            ctypes.wintypes.DWORD, ctypes.c_wchar_p, ctypes.c_wchar_p, 
+            ctypes.wintypes.DWORD, ctypes.c_int, ctypes.c_int, 
+            ctypes.c_int, ctypes.c_int, HWND, ctypes.wintypes.HMENU, 
+            ctypes.wintypes.HINSTANCE, ctypes.c_void_p
         ]
+
+        user32.AddClipboardFormatListener.restype = ctypes.wintypes.BOOL
+        user32.AddClipboardFormatListener.argtypes = [HWND]
+
+        user32.RemoveClipboardFormatListener.restype = ctypes.wintypes.BOOL
+        user32.RemoveClipboardFormatListener.argtypes = [HWND]
+
+        user32.GetMessageW.restype = ctypes.wintypes.BOOL
+        user32.GetMessageW.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG), HWND, ctypes.c_uint, ctypes.c_uint]
+
+        user32.TranslateMessage.restype = ctypes.wintypes.BOOL
+        user32.TranslateMessage.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG)]
+
+        user32.DispatchMessageW.restype = LRESULT
+        user32.DispatchMessageW.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG)]
+
+        user32.PostQuitMessage.restype = None
+        user32.PostQuitMessage.argtypes = [ctypes.c_int]
+
+        # ------------------------------------------------------------------
+        # Window Class and Procedure
+        # ------------------------------------------------------------------
 
         def wnd_proc(hwnd, msg, wparam, lparam):
             if msg == WM_CLIPBOARDUPDATE:
@@ -72,7 +105,7 @@ class ClipboardClient:
                 return 0
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
-        wnd_proc_cb = WNDPROC(wnd_proc)
+        self._wnd_proc_cb = WNDPROC(wnd_proc)
 
         class WNDCLASSEX(ctypes.Structure):
             _fields_ = [
@@ -81,87 +114,129 @@ class ClipboardClient:
                 ("lpfnWndProc", WNDPROC),
                 ("cbClsExtra", ctypes.c_int),
                 ("cbWndExtra", ctypes.c_int),
-                ("hInstance", ctypes.wintypes.HANDLE),
-                ("hIcon", ctypes.wintypes.HANDLE),
+                ("hInstance", ctypes.wintypes.HINSTANCE),
+                ("hIcon", ctypes.wintypes.HICON),
                 ("hCursor", ctypes.wintypes.HANDLE),
-                ("hbrBackground", ctypes.wintypes.HANDLE),
+                ("hbrBackground", ctypes.wintypes.HBRUSH),
                 ("lpszMenuName", ctypes.c_wchar_p),
                 ("lpszClassName", ctypes.c_wchar_p),
-                ("hIconSm", ctypes.wintypes.HANDLE),
+                ("hIconSm", ctypes.wintypes.HICON),
             ]
 
-        h_inst = ctypes.windll.kernel32.GetModuleHandleW(None)
+        user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEX)]
+
+        h_inst = kernel32.GetModuleHandleW(None)
         class_name = "UniDeskClipboardClient"
 
         wc = WNDCLASSEX()
         wc.cbSize = ctypes.sizeof(WNDCLASSEX)
-        wc.lpfnWndProc = wnd_proc_cb
+        wc.lpfnWndProc = self._wnd_proc_cb
         wc.hInstance = h_inst
         wc.lpszClassName = class_name
-        ctypes.windll.user32.RegisterClassExW(ctypes.byref(wc))
+        
+        if not user32.RegisterClassExW(ctypes.byref(wc)):
+            pass
 
-        HWND_MESSAGE = ctypes.wintypes.HWND(-3)
-        hwnd = ctypes.windll.user32.CreateWindowExW(
+        HWND_MESSAGE = HWND(-3)
+        hwnd = user32.CreateWindowExW(
             0, class_name, "UniDesk Clipboard Client", 0,
             0, 0, 0, 0,
             HWND_MESSAGE, None, h_inst, None,
         )
         if not hwnd:
-            log.error("Failed to create clipboard client window")
+            log.error("Failed to create clipboard client window (Error: %s)", ctypes.GetLastError())
             return
 
         self._hwnd = hwnd
-        ctypes.windll.user32.AddClipboardFormatListener(hwnd)
+        if not user32.AddClipboardFormatListener(hwnd):
+            log.error("AddClipboardFormatListener failed (Error: %s)", ctypes.GetLastError())
+            return
+
+        log.info("Clipboard client listener started successfully")
 
         msg = ctypes.wintypes.MSG()
-        while ctypes.windll.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
-            ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
 
     def _handle_update(self) -> None:
         if self._suppress_next:
             self._suppress_next = False
+            log.debug("Suppressing clipboard update (write origin)")
             return
         text = self._get_clipboard_text()
-        if text and text != self._last_text:
+        if text is not None and text != self._last_text:
             self._last_text = text
+            log.debug("Clipboard changed (%d chars)", len(text))
             try:
                 self._on_change(text)
             except Exception as exc:
                 log.warning("Clipboard callback error: %s", exc)
 
     def _get_clipboard_text(self) -> Optional[str]:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        
+        # Signatures
+        HWND = ctypes.wintypes.HWND
+        user32.OpenClipboard.restype = ctypes.wintypes.BOOL
+        user32.OpenClipboard.argtypes = [HWND]
+        user32.CloseClipboard.restype = ctypes.wintypes.BOOL
+        user32.CloseClipboard.argtypes = []
+        user32.GetClipboardData.restype = ctypes.wintypes.HANDLE
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+        kernel32.GlobalUnlock.argtypes = [ctypes.wintypes.HANDLE]
+
+        text = None
         try:
-            if not ctypes.windll.user32.OpenClipboard(None):
+            if not user32.OpenClipboard(None):
                 return None
-            h = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
-            if not h:
-                return None
-            ptr = ctypes.windll.kernel32.GlobalLock(h)
-            if not ptr:
-                return None
-            text = ctypes.wstring_at(ptr)
-            ctypes.windll.kernel32.GlobalUnlock(h)
-            return text
+            h = user32.GetClipboardData(CF_UNICODETEXT)
+            if h:
+                ptr = kernel32.GlobalLock(h)
+                if ptr:
+                    text = ctypes.wstring_at(ptr)
+                    kernel32.GlobalUnlock(h)
         except Exception as exc:
             log.warning("GetClipboardData error: %s", exc)
-            return None
         finally:
-            ctypes.windll.user32.CloseClipboard()
+            user32.CloseClipboard()
+        return text
 
     def _set_clipboard_text(self, text: str) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        
+        # Signatures
+        user32.OpenClipboard.restype = ctypes.wintypes.BOOL
+        user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+        user32.EmptyClipboard.restype = ctypes.wintypes.BOOL
+        user32.EmptyClipboard.argtypes = []
+        user32.SetClipboardData.restype = ctypes.wintypes.HANDLE
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.wintypes.HANDLE]
+        kernel32.GlobalAlloc.restype = ctypes.wintypes.HANDLE
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+        kernel32.GlobalUnlock.argtypes = [ctypes.wintypes.HANDLE]
+
         try:
-            if not ctypes.windll.user32.OpenClipboard(None):
+            if not user32.OpenClipboard(None):
                 return
-            ctypes.windll.user32.EmptyClipboard()
+            user32.EmptyClipboard()
             encoded = (text + "\x00").encode("utf-16-le")
-            h = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+            h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
             if h:
-                ptr = ctypes.windll.kernel32.GlobalLock(h)
-                ctypes.memmove(ptr, encoded, len(encoded))
-                ctypes.windll.kernel32.GlobalUnlock(h)
-                ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, h)
+                ptr = kernel32.GlobalLock(h)
+                if ptr:
+                    ctypes.memmove(ptr, encoded, len(encoded))
+                    kernel32.GlobalUnlock(h)
+                    user32.SetClipboardData(CF_UNICODETEXT, h)
         except Exception as exc:
             log.warning("SetClipboardData error: %s", exc)
         finally:
-            ctypes.windll.user32.CloseClipboard()
+            user32.CloseClipboard()
