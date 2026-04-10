@@ -23,6 +23,11 @@ from ..common.constants import LOCAL_MOUSE_GRAB_THRESHOLD
 
 log = logging.getLogger(__name__)
 
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
+
 WH_MOUSE_LL = 14
 WM_MOUSEMOVE = 0x0200
 HC_ACTION = 0
@@ -56,8 +61,9 @@ class CursorManager:
     Calls *on_grab_request()* when the local user physically moves the mouse.
     """
 
-    def __init__(self, on_grab_request: Callable[[], None]) -> None:
+    def __init__(self, on_grab_request: Callable[[], None], hide_mouse: bool = False) -> None:
         self._on_grab_request = on_grab_request
+        self._hide_mouse = hide_mouse
         self._remote_controlled = False
         self._hook: Optional[ctypes.wintypes.HHOOK] = None
         self._hook_cb = HOOKPROC(self._mouse_proc)
@@ -76,6 +82,8 @@ class CursorManager:
         """Server released control; restore local input."""
         self._remote_controlled = False
         self._remove_hook()
+        if self._hide_mouse:
+            self._teleport_to_corner()
         self._show_cursor(True)
         self._last_x = None
         self._last_y = None
@@ -151,3 +159,17 @@ class CursorManager:
         else:
             while ctypes.windll.user32.ShowCursor(False) >= 0:
                 pass
+
+    def _teleport_to_corner(self) -> None:
+        """Teleport mouse to bottom-right corner of virtual desktop."""
+        user32 = ctypes.windll.user32
+        vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        vw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        vh = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        
+        # Teleport to bottom-right
+        target_x = vx + vw - 1
+        target_y = vy + vh - 1
+        user32.SetCursorPos(target_x, target_y)
+        log.debug("Teleported mouse to corner (%d, %d)", target_x, target_y)

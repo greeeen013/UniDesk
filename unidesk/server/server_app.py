@@ -35,10 +35,11 @@ log = logging.getLogger(__name__)
 
 
 class ServerApp:
-    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0, scale_to_snap: bool = False) -> None:
+    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0, scale_to_snap: bool = False, hide_mouse: bool = False) -> None:
         self.port = port
         self.sensitivity = sensitivity
         self.scale_to_snap = scale_to_snap
+        self.hide_mouse = hide_mouse
         self._monitors: list[MonitorRect] = []
         self._client_mgr = ClientManager()
         self._edge = EdgeDetector([], scale_to_snap=scale_to_snap)
@@ -346,6 +347,19 @@ class ServerApp:
         if client:
             client.send(proto.make_control_grant())
         log.info("Control granted to %s", client_id)
+
+        if self.hide_mouse:
+            self._teleport_to_corner()
+
+    def _teleport_to_corner(self) -> None:
+        """Teleport server mouse to bottom-right corner of virtual desktop."""
+        user32 = ctypes.windll.user32
+        # SM_XVIRTUALSCREEN=76, SM_YVIRTUALSCREEN=77, SM_CXVIRTUALSCREEN=78, SM_CYVIRTUALSCREEN=79
+        vx = user32.GetSystemMetrics(76)
+        vy = user32.GetSystemMetrics(77)
+        vw = user32.GetSystemMetrics(78)
+        vh = user32.GetSystemMetrics(79)
+        self._capture.set_cursor_pos(vx + vw - 1, vy + vh - 1)
 
     def _release_control(self) -> None:
         if self._active_client_id:

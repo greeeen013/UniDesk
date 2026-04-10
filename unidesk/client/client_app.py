@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 class ClientApp:
-    def __init__(self, server_host: str, port: int = TCP_PORT) -> None:
+    def __init__(self, server_host: str, port: int = TCP_PORT, hide_mouse: bool = False) -> None:
         self.server_host = server_host
         self.port = port
         self._sock: Optional[socket.socket] = None
@@ -32,7 +32,7 @@ class ClientApp:
         self._send_queue: queue.Queue = queue.Queue()
         self._mouse = MouseSimulator()
         self._keyboard = KeyboardSimulator()
-        self._cursor = CursorManager(on_grab_request=self._on_local_grab)
+        self._cursor = CursorManager(on_grab_request=self._on_local_grab, hide_mouse=hide_mouse)
         self._clipboard = ClipboardClient(on_change=self._on_local_clipboard)
         self.client_id: Optional[str] = None
         self.server_monitors: list[MonitorRect] = []

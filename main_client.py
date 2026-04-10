@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--server", required=True, help="Server IP address or hostname")
     parser.add_argument("--port", type=int, default=25432, help="Server TCP port")
     parser.add_argument("--admin", action="store_true", help="Request administrator privileges to bypass UIPI (e.g., clicking on Taskbar)")
+    parser.add_argument("--hide-mouse", action="store_true", help="Teleport mouse to bottom-right corner when inactive")
     args = parser.parse_args()
 
     import ctypes
@@ -46,7 +47,7 @@ def main():
 
     from unidesk.client.client_app import ClientApp
 
-    client = ClientApp(server_host=args.server, port=args.port)
+    client = ClientApp(server_host=args.server, port=args.port, hide_mouse=args.hide_mouse)
 
     # Minimal tray icon for client
     pix = QPixmap(16, 16)
