@@ -33,7 +33,7 @@ Funguje na Windows, nevyžaduje žádný hardware. Inspirováno nástroji jako B
 - Obě PC ve stejné lokální síti
 - Admin práva **nejsou potřeba** pro běžné použití
 
-> **Poznámka k admin právům:** Low-level hooky (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) a `SendInput` fungují bez admin práv pro normální okna. Pokud chceš ovládat UAC dialogy nebo Task Manager, spusť server (a případně i klienta) jako správce.
+> **Poznámka k admin právům:** Low-level hooky (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) a `SendInput` fungují bez admin práv pro normální okna. Pokud chceš ovládat UAC dialogy nebo Task Manager, spusť server jako správce. Klienta lze povýšit automaticky pomocí přepínače `--admin`.
 
 ---
 
@@ -65,8 +65,10 @@ Otevře se GUI okno s rozložením monitorů. Server naslouchá na portu `25432`
 
 Volitelné argumenty:
 ```bash
-python main_server.py --port 25432
+python main_server.py --port 25432 --sensitivity 1.0 --debug
 ```
+
+`--sensitivity` (výchozí `1.0`) je násobič pohybu myši. Slouží k dorovnání rozdílů v DPI mezi počítači (např. `0.5` pro zpomalení, `2.0` pro zrychlení).
 
 ### 3. Spusť klienta na PC2
 
@@ -78,8 +80,10 @@ Nahraď `192.168.1.10` IP adresou PC1. Na PC2 se zobrazí ikona v systémové li
 
 Volitelné argumenty:
 ```bash
-python main_client.py --server 192.168.1.10 --port 25432
+python main_client.py --server 192.168.1.10 --port 25432 --admin
 ```
+
+`--admin` vyvolá UAC dialog pro spuštění klienta s právy administrátora, což umožní klikat na hlavní lištu, ovládat Task Manager a další chráněná okna (řeší UIPI izolaci).
 
 ### 4. Nastav rozložení monitorů
 

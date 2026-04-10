@@ -33,7 +33,7 @@ Works on Windows, no additional hardware required. Inspired by tools like Barrie
 - Both PCs on the same local network
 - Administrator rights **not required** for normal use
 
-> **Note on admin rights:** Low-level hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) and `SendInput` work without elevation for regular windows. To also capture or inject input into UAC dialogs and Task Manager, run both server and client as Administrator.
+> **Note on admin rights:** Low-level hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) and `SendInput` work without elevation for regular windows. To also capture or inject input into UAC dialogs and Task Manager, run the server as Administrator. The client can be elevated automatically using the `--admin` flag if needed.
 
 ---
 
@@ -65,8 +65,10 @@ A GUI window opens showing your monitor layout. The server listens on port `2543
 
 Optional arguments:
 ```bash
-python main_server.py --port 25432
+python main_server.py --port 25432 --sensitivity 1.0
 ```
+
+`--sensitivity` (default `1.0`) is a multiplier for mouse movement. Use it to sync DPI differences between PCs (e.g., `0.5` to slow down, `2.0` to speed up).
 
 ### 3. Start the client on PC2
 
@@ -78,8 +80,10 @@ Replace `192.168.1.10` with PC1's IP address. A tray icon appears on PC2 — gre
 
 Optional arguments:
 ```bash
-python main_client.py --server 192.168.1.10 --port 25432
+python main_client.py --server 192.168.1.10 --port 25432 --admin
 ```
+
+`--admin` triggers a UAC prompt to run the client with Administrator privileges, allowing interaction with the Taskbar, Task Manager, and other elevated windows.
 
 ### 4. Set up the monitor layout
 
