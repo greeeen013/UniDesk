@@ -35,8 +35,9 @@ log = logging.getLogger(__name__)
 
 
 class ServerApp:
-    def __init__(self, port: int = TCP_PORT) -> None:
+    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0) -> None:
         self.port = port
+        self.sensitivity = sensitivity
         self._monitors: list[MonitorRect] = []
         self._client_mgr = ClientManager()
         self._edge = EdgeDetector([])
@@ -237,9 +238,19 @@ class ServerApp:
                 if abs(dx) > 300 or abs(dy) > 300:
                     dx, dy = 0, 0
 
+                # Apply optional hardware DPI synchronization factor
+                if self.sensitivity != 1.0:
+                    dx *= self.sensitivity
+                    dy *= self.sensitivity
+
                 self._virt_x += dx
                 self._virt_y += dy
                 
+                # Prevent virtual cursor from eternally wandering outside the actual dimensions of the client screen,
+                # bounded by a 10px buffer to allow edge release triggers to fully actuate.
+                self._virt_x = max(zone.rect.left - 10, min(zone.rect.right + 10, self._virt_x))
+                self._virt_y = max(zone.rect.top - 10, min(zone.rect.bottom + 10, self._virt_y))
+
                 anchor = self._monitors[zone.placement.anchor_monitor_id]
 
                 # Release: virtual cursor crossed back past zone boundary into server territory

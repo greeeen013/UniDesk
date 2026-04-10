@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--port", type=int, default=25432, help="TCP port to listen on")
     parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging")
     parser.add_argument("--shutdown", type=int, default=0, help="Automatically shutdown after SECONDS (for debugging)")
+    parser.add_argument("--sensitivity", type=float, default=1.0, help="Mouse sensitivity multiplier when exploring a client monitor (syncs physical DPI gaps)")
     args = parser.parse_args()
 
     if args.debug:
@@ -41,7 +42,7 @@ def main():
     from unidesk.server.server_app import ServerApp
     from unidesk.gui.main_window import MainWindow
 
-    server = ServerApp(port=args.port)
+    server = ServerApp(port=args.port, sensitivity=args.sensitivity)
     server.start()
 
     window = MainWindow(server_app=server)
