@@ -21,6 +21,17 @@ logging.basicConfig(
 
 
 def main():
+    import ctypes
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        logging.info("Requesting Administrator privileges to bypass Windows UIPI (Taskbar interaction)...")
+        # Re-run the program with admin rights
+        # sys.executable is the python interpreter
+        params = " ".join([f'"{arg}"' for arg in sys.argv])
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+        if ret <= 32:
+            logging.error("Failed to elevate gracefully. Try running Command Prompt as Administrator manually.")
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(description="UniDesk client (other station)")
     parser.add_argument("--server", required=True, help="Server IP address or hostname")
     parser.add_argument("--port", type=int, default=25432, help="Server TCP port")
