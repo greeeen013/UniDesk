@@ -18,8 +18,7 @@ import ctypes.wintypes
 import logging
 import queue
 import threading
-import time
-from typing import Callable, Optional
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +94,39 @@ HOOKPROC = ctypes.WINFUNCTYPE(
 # Injected event flag — used to avoid re-processing events we injected ourselves
 LLMHF_INJECTED = 0x00000001
 
+# SendInput structures — used by set_cursor_pos so the resulting WM_MOUSEMOVE has
+# LLMHF_INJECTED set, which our hook skips automatically (no _repositioning flag needed).
+INPUT_MOUSE            = 0
+MOUSEEVENTF_MOVE       = 0x0001
+MOUSEEVENTF_ABSOLUTE   = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000   # coordinates span entire virtual desktop
+SM_XVIRTUALSCREEN  = 76
+SM_YVIRTUALSCREEN  = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx",          ctypes.c_long),
+        ("dy",          ctypes.c_long),
+        ("mouseData",   ctypes.wintypes.DWORD),
+        ("dwFlags",     ctypes.wintypes.DWORD),
+        ("time",        ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type",   ctypes.wintypes.DWORD),
+        ("_input", _INPUT_UNION),
+    ]
+
 
 class InputCapture:
     """
@@ -112,8 +144,6 @@ class InputCapture:
         self.event_queue: queue.Queue = queue.Queue()
         # When True, mouse + keyboard events are suppressed (not passed to OS)
         self.is_forwarding: bool = False
-        # When True, the next cursor move is ours (SetCursorPos) — skip it
-        self._repositioning: bool = False
 
         self._mouse_hook: Optional[ctypes.wintypes.HHOOK] = None
         self._keyboard_hook: Optional[ctypes.wintypes.HHOOK] = None
@@ -151,20 +181,29 @@ class InputCapture:
         # SetWindowsHookExW returns HHOOK (pointer-sized handle).
         # Default restype is c_int (32-bit) which truncates the handle on 64-bit Windows.
         user32.SetWindowsHookExW.restype = ctypes.c_void_p
-        # CallNextHookEx also returns LRESULT (pointer-sized).
+        # CallNextHookEx: LRESULT (pointer-sized) return, HHOOK + nCode + WPARAM + LPARAM args.
+        # argtypes must be set — without them ctypes defaults to c_int for the lParam (64-bit
+        # pointer), which raises OverflowError on every hook invocation on 64-bit Windows.
+        user32.CallNextHookEx.argtypes = [
+            ctypes.c_void_p,   # hhk  (HHOOK — pointer-sized, can be NULL)
+            ctypes.c_int,      # nCode
+            ctypes.c_size_t,   # wParam (WPARAM — unsigned pointer-sized)
+            ctypes.c_ssize_t,  # lParam (LPARAM — signed pointer-sized)
+        ]
         user32.CallNextHookEx.restype = ctypes.c_ssize_t
 
-        h_inst = ctypes.windll.kernel32.GetModuleHandleW(None)
-
+        # WH_MOUSE_LL / WH_KEYBOARD_LL run in the installing thread — hMod must be NULL.
+        # Passing GetModuleHandleW(None) with default c_int restype truncates the 64-bit
+        # handle to 32 bits → error 126 (ERROR_MOD_NOT_FOUND). Use None (NULL) instead.
         self._mouse_hook = user32.SetWindowsHookExW(
-            WH_MOUSE_LL, self._mouse_cb, h_inst, 0
+            WH_MOUSE_LL, self._mouse_cb, None, 0
         )
         if not self._mouse_hook:
             err = ctypes.windll.kernel32.GetLastError()
             log.error("Failed to install WH_MOUSE_LL hook (error %d)", err)
 
         self._keyboard_hook = user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, self._keyboard_cb, h_inst, 0
+            WH_KEYBOARD_LL, self._keyboard_cb, None, 0
         )
         if not self._keyboard_hook:
             err = ctypes.windll.kernel32.GetLastError()
@@ -193,12 +232,9 @@ class InputCapture:
 
         ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
 
-        # Skip injected events (e.g. from our own SendInput on server)
+        # Skip injected events — this covers our own set_cursor_pos (SendInput) calls
+        # as well as any other synthetic input we generate.
         if ms.flags & LLMHF_INJECTED:
-            return ctypes.windll.user32.CallNextHookEx(None, n_code, w_param, l_param)
-
-        # Skip our own cursor repositioning
-        if self._repositioning:
             return ctypes.windll.user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         x, y = ms.pt.x, ms.pt.y
@@ -253,10 +289,32 @@ class InputCapture:
     # ------------------------------------------------------------------
 
     def set_cursor_pos(self, x: int, y: int) -> None:
-        """Move the server cursor. Sets repositioning flag to skip the resulting event."""
-        self._repositioning = True
-        ctypes.windll.user32.SetCursorPos(x, y)
-        self._repositioning = False
+        """Move the server cursor via SendInput.
+
+        SendInput sets LLMHF_INJECTED on the resulting WM_MOUSEMOVE, which our hook
+        skips automatically — no recursion, no _repositioning race condition.
+        (SetCursorPos does NOT set LLMHF_INJECTED and its WM_MOUSEMOVE was often
+        processed after _repositioning was already cleared, causing spurious releases.)
+        """
+        user32 = ctypes.windll.user32
+        vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        vw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        vh = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        norm_x = int((x - vx) * 65535 / (vw - 1)) if vw > 1 else 0
+        norm_y = int((y - vy) * 65535 / (vh - 1)) if vh > 1 else 0
+        inp = INPUT(
+            type=INPUT_MOUSE,
+            _input=_INPUT_UNION(mi=MOUSEINPUT(
+                dx=norm_x,
+                dy=norm_y,
+                mouseData=0,
+                dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                time=0,
+                dwExtraInfo=None,
+            )),
+        )
+        user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def show_cursor(self, visible: bool) -> None:
         if visible:

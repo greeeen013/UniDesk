@@ -46,6 +46,14 @@ class ServerApp:
         self._active_client_id: Optional[str] = None
         self._running = False
 
+        # Virtual cursor tracking: physical cursor is locked at boundary while forwarding,
+        # so absolute coords can't accumulate. We track a virtual position by summing deltas
+        # from each event, then translate that to client coords.
+        self._virt_x: float = 0.0   # virtual position in server-space coords
+        self._virt_y: float = 0.0
+        self._last_raw_x: int = 0   # server cursor position at last event / last warp
+        self._last_raw_y: int = 0
+
         # Callbacks for GUI updates
         self.on_client_connected: Optional[callable] = None
         self.on_client_disconnected: Optional[callable] = None
@@ -215,31 +223,70 @@ class ServerApp:
             x, y = ev["x"], ev["y"]
 
             if self._active_client_id:
-                # Check if cursor has left the virtual zone (back to server desktop)
                 zone = self._edge.get_zone(self._active_client_id)
-                if zone and not zone.rect.contains(x, y):
-                    # Re-entered server desktop — check if it's a real server monitor
-                    on_server = any(m.contains(x, y) for m in self._monitors)
-                    if on_server:
-                        self._release_control()
-                        return
-                # Still in virtual zone — translate and forward
-                result = self._edge.hit_test(x, y)
-                if result:
-                    _, cx, cy = result
-                    client = self._client_mgr.get(self._active_client_id)
-                    if client:
-                        client.send(proto.make_mouse_move(cx, cy))
-                # Lock server cursor at boundary
-                bp = self._edge.get_boundary_point(self._active_client_id)
-                if bp:
-                    self._capture.set_cursor_pos(*bp)
+                if not zone:
+                    return
+
+                # Physical cursor is locked at the zone boundary, so absolute coords
+                # can't accumulate. Track delta from the last known cursor position
+                # (updated to boundary after each set_cursor_pos warp).
+                dx = x - self._last_raw_x
+                dy = y - self._last_raw_y
+
+                # Prevent massive jumps from pending events right after warps
+                if abs(dx) > 300 or abs(dy) > 300:
+                    dx, dy = 0, 0
+
+                self._virt_x += dx
+                self._virt_y += dy
+                
+                anchor = self._monitors[zone.placement.anchor_monitor_id]
+
+                # Release: virtual cursor crossed back past zone boundary into server territory
+                edge = zone.placement.anchor_edge
+                if (
+                    (edge == "right"  and self._virt_x < zone.rect.left)
+                    or (edge == "left"   and self._virt_x >= zone.rect.right)
+                    or (edge == "bottom" and self._virt_y < zone.rect.top)
+                    or (edge == "top"    and self._virt_y >= zone.rect.bottom)
+                ):
+                    log.debug(
+                        "Virtual cursor (%.0f, %.0f) left zone %s → releasing",
+                        self._virt_x, self._virt_y, zone.client_id,
+                    )
+                    # Warp physical cursor precisely back to the crossing point
+                    ret_x = max(anchor.left, min(anchor.right - 1, int(self._virt_x)))
+                    ret_y = max(anchor.top, min(anchor.bottom - 1, int(self._virt_y)))
+                    self._capture.set_cursor_pos(ret_x, ret_y)
+
+                    self._release_control()
+                    return
+
+                # Translate virtual server-space position to client monitor coords
+                cm = zone.client_monitor
+                cx = int((self._virt_x - zone.rect.left) / zone.rect.width  * cm.width)
+                cy = int((self._virt_y - zone.rect.top)  / zone.rect.height * cm.height)
+                cx = max(0, min(cm.width  - 1, cx))
+                cy = max(0, min(cm.height - 1, cy))
+                
+                cx += cm.left
+                cy += cm.top
+
+                client = self._client_mgr.get(self._active_client_id)
+                if client:
+                    client.send(proto.make_mouse_move(cx, cy))
+
+                # Since `_capture.is_forwarding = True`, our hook suppresses the original WM_MOUSEMOVE,
+                # meaning the Windows OS cursor is permanently frozen at `_last_raw`.
+                # Every new event received natively carries the delta appended to that frozen base!
+                # Therefore we do NOT update `_last_raw`; it acts as the eternal origin point.
+
             else:
                 # Check if cursor entered a virtual zone
                 result = self._edge.hit_test(x, y)
                 if result:
                     client_id, cx, cy = result
-                    self._grant_control(client_id)
+                    self._grant_control(client_id, x, y)
                     client = self._client_mgr.get(client_id)
                     if client:
                         client.send(proto.make_mouse_move(cx, cy))
@@ -266,10 +313,23 @@ class ServerApp:
     # Control handoff
     # ------------------------------------------------------------------
 
-    def _grant_control(self, client_id: str) -> None:
+    def _grant_control(self, client_id: str, hit_x: int, hit_y: int) -> None:
         self._active_client_id = client_id
         self._capture.is_forwarding = True
         self._capture.show_cursor(False)
+        self._virt_x = float(hit_x)
+        self._virt_y = float(hit_y)
+        
+        zone = self._edge.get_zone(client_id)
+        if zone:
+            anchor = self._monitors[zone.placement.anchor_monitor_id]
+            self._last_raw_x = (anchor.left + anchor.right) // 2
+            self._last_raw_y = (anchor.top + anchor.bottom) // 2
+            self._capture.set_cursor_pos(self._last_raw_x, self._last_raw_y)
+        else:
+            self._last_raw_x = hit_x
+            self._last_raw_y = hit_y
+            
         client = self._client_mgr.get(client_id)
         if client:
             client.send(proto.make_control_grant())
