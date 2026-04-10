@@ -63,13 +63,6 @@ python main_server.py
 
 A GUI window opens showing your monitor layout. The server listens on port `25432`.
 
-Optional arguments:
-```bash
-python main_server.py --port 25432 --sensitivity 1.0
-```
-
-`--sensitivity` (default `1.0`) is a multiplier for mouse movement. Use it to sync DPI differences between PCs (e.g., `0.5` to slow down, `2.0` to speed up).
-
 ### 3. Start the client on PC2
 
 ```bash
@@ -78,12 +71,27 @@ python main_client.py --server 192.168.1.10
 
 Replace `192.168.1.10` with PC1's IP address. A tray icon appears on PC2 — green means connected.
 
-Optional arguments:
-```bash
-python main_client.py --server 192.168.1.10 --port 25432 --admin
-```
+### Command Line Arguments
 
-`--admin` triggers a UAC prompt to run the client with Administrator privileges, allowing interaction with the Taskbar, Task Manager, and other elevated windows.
+#### Server (`main_server.py`)
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--port` | `int` | `25432` | TCP port to listen on. |
+| `--sensitivity` | `float` | `1.0` | Mouse sensitivity multiplier. Syncs physical DPI gaps when controlling a client. |
+| `--scale-to-snap` | flag | `off` | Scale virtual trigger zones to match the physical monitor's edge exactly. |
+| `--hide-mouse` | flag | `off` | Teleport the server's mouse to the bottom-right corner when it's controlled a client. |
+| `--debug` | flag | `off` | Enable detailed debug logging. |
+| `--shutdown` | `int` | `0` | Automatically shutdown the server after N seconds (useful for debugging). |
+
+#### Client (`main_client.py`)
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--server` | `str` | **Required** | IP address or hostname of the UniDesk server. |
+| `--port` | `int` | `25432` | TCP port of the server. |
+| `--admin` | flag | `off` | Request Administrator privileges to bypass UIPI (allows clicking on Taskbar/Start). |
+| `--hide-mouse` | flag | `off` | Teleport the client's mouse to the bottom-right corner when the server releases control. |
+
+---
 
 ### 4. Set up the monitor layout
 

@@ -63,13 +63,6 @@ python main_server.py
 
 Otevře se GUI okno s rozložením monitorů. Server naslouchá na portu `25432`.
 
-Volitelné argumenty:
-```bash
-python main_server.py --port 25432 --sensitivity 1.0 --debug
-```
-
-`--sensitivity` (výchozí `1.0`) je násobič pohybu myši. Slouží k dorovnání rozdílů v DPI mezi počítači (např. `0.5` pro zpomalení, `2.0` pro zrychlení).
-
 ### 3. Spusť klienta na PC2
 
 ```bash
@@ -78,12 +71,27 @@ python main_client.py --server 192.168.1.10
 
 Nahraď `192.168.1.10` IP adresou PC1. Na PC2 se zobrazí ikona v systémové liště — zelená znamená připojeno.
 
-Volitelné argumenty:
-```bash
-python main_client.py --server 192.168.1.10 --port 25432 --admin
-```
+### Argumenty příkazové řádky
 
-`--admin` vyvolá UAC dialog pro spuštění klienta s právy administrátora, což umožní klikat na hlavní lištu, ovládat Task Manager a další chráněná okna (řeší UIPI izolaci).
+#### Server (`main_server.py`)
+| Argument | Typ | Výchozí | Popis |
+|---|---|---|---|
+| `--port` | `int` | `25432` | TCP port, na kterém server naslouchá. |
+| `--sensitivity` | `float` | `1.0` | Násobič citlivosti myši. Slouží k dorovnání DPI mezi počítači. |
+| `--scale-to-snap` | flag | `vypnuto` | Škálovat virtuální zónu tak, aby přesně odpovídala hraně fyzického monitoru. |
+| `--hide-mouse` | flag | `vypnuto` | Při předání kontroly klientovi se myš na serveru teleportuje do pravého dolního rohu. |
+| `--debug` | flag | `vypnuto` | Zapne detailní ladicí (debug) logování. |
+| `--shutdown` | `int` | `0` | Automaticky vypne server po N sekundách (užitečné pro ladění). |
+
+#### Klient (`main_client.py`)
+| Argument | Typ | Výchozí | Popis |
+|---|---|---|---|
+| `--server` | `str` | **Povinné** | IP adresa nebo hostname UniDesk serveru. |
+| `--port` | `int` | `25432` | TCP port serveru. |
+| `--admin` | flag | `vypnuto` | Vyžádá práva správce (umožní klikat na hlavní lištu / Start). |
+| `--hide-mouse` | flag | `vypnuto` | Při vrácení kontroly serveru se myš na klientovi teleportuje do pravého dolního rohu. |
+
+---
 
 ### 4. Nastav rozložení monitorů
 
