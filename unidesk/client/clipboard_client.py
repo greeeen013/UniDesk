@@ -30,7 +30,7 @@ class ClipboardClient:
         self._compress_images = compress_images
         self._last_text: Optional[str] = None
         self._last_image_hash: Optional[str] = None
-        self._suppress_next = False
+        self._suppress_count: int = 0
         self._hwnd: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -48,7 +48,7 @@ class ClipboardClient:
 
     def write(self, payload: dict) -> None:
         """Apply clipboard content received from server."""
-        self._suppress_next = True
+        self._suppress_count += 1
         fmt = payload.get("format")
         if fmt == "text":
             self._set_clipboard_text(payload.get("data", ""))
@@ -57,7 +57,12 @@ class ClipboardClient:
             data = base64.b64decode(payload["data"])
             encoding = payload.get("encoding", "dib+b64")
             if encoding == "png+b64":
-                data = _png_to_dib(data)
+                dib = _png_to_dib(data)
+                if dib is None:
+                    log.warning("Skipping clipboard write: cannot convert png+b64 without Pillow")
+                    self._suppress_count -= 1
+                    return
+                data = dib
             self._set_clipboard_image(data)
             self._last_image_hash = hashlib.md5(data).hexdigest()
 
@@ -167,8 +172,8 @@ class ClipboardClient:
             user32.DispatchMessageW(ctypes.byref(msg))
 
     def _handle_update(self) -> None:
-        if self._suppress_next:
-            self._suppress_next = False
+        if self._suppress_count > 0:
+            self._suppress_count -= 1
             log.debug("Suppressing clipboard update (write origin)")
             return
 
@@ -375,8 +380,8 @@ def _dib_to_png(dib: bytes) -> Optional[bytes]:
         return None
 
 
-def _png_to_dib(png: bytes) -> bytes:
-    """Convert PNG bytes to raw CF_DIB bytes. Falls back gracefully if Pillow missing."""
+def _png_to_dib(png: bytes) -> Optional[bytes]:
+    """Convert PNG bytes to raw CF_DIB bytes. Returns None if Pillow missing."""
     try:
         import io
         from PIL import Image
@@ -386,7 +391,7 @@ def _png_to_dib(png: bytes) -> bytes:
         return buf.getvalue()[14:]  # strip 14-byte BITMAPFILEHEADER
     except ImportError:
         log.warning("Pillow not installed — cannot decode png+b64 image, skipping")
-        return png
+        return None
     except Exception as exc:
         log.warning("PNG→DIB conversion failed: %s", exc)
         return png
