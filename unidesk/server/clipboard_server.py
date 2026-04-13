@@ -315,9 +315,11 @@ class ClipboardServer:
             if h:
                 ptr = kernel32.GlobalLock(h)
                 if ptr:
-                    ctypes.memmove(ptr, encoded, len(encoded))
-                    kernel32.GlobalUnlock(h)
-                    user32.SetClipboardData(CF_UNICODETEXT, h)
+                    try:
+                        ctypes.memmove(ptr, encoded, len(encoded))
+                        user32.SetClipboardData(CF_UNICODETEXT, h)
+                    finally:
+                        kernel32.GlobalUnlock(h)
         except Exception as exc:
             log.warning("SetClipboardData(text) error: %s", exc)
         finally:
@@ -348,9 +350,11 @@ class ClipboardServer:
             if h:
                 ptr = kernel32.GlobalLock(h)
                 if ptr:
-                    ctypes.memmove(ptr, dib, len(dib))
-                    kernel32.GlobalUnlock(h)
-                    user32.SetClipboardData(CF_DIB, h)
+                    try:
+                        ctypes.memmove(ptr, dib, len(dib))
+                        user32.SetClipboardData(CF_DIB, h)
+                    finally:
+                        kernel32.GlobalUnlock(h)
         except Exception as exc:
             log.warning("SetClipboardData(CF_DIB) error: %s", exc)
         finally:
