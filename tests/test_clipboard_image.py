@@ -37,7 +37,7 @@ def test_clipboard_server_write_dispatches():
         return
 
     cb = ClipboardServer.__new__(ClipboardServer)
-    cb._suppress_next = False
+    cb._suppress_count = 0
     cb._last_text = None
     cb._last_image_hash = None
 
@@ -68,7 +68,7 @@ def test_image_hash_dedup():
         return
 
     cb = ClipboardServer.__new__(ClipboardServer)
-    cb._suppress_next = False
+    cb._suppress_count = 0
     cb._last_text = None
     cb._last_image_hash = None
     cb._compress_images = False
