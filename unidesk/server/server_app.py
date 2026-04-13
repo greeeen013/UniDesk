@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 
 class ServerApp:
-    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0, scale_to_snap: bool = False, hide_mouse: bool = False) -> None:
+    def __init__(self, port: int = TCP_PORT, sensitivity: float = 1.0, scale_to_snap: bool = False, hide_mouse: bool = False, compress_images: bool = False) -> None:
         self.port = port
         self.sensitivity = sensitivity
         self.scale_to_snap = scale_to_snap
@@ -44,7 +44,7 @@ class ServerApp:
         self._client_mgr = ClientManager()
         self._edge = EdgeDetector([], scale_to_snap=scale_to_snap)
         self._capture = InputCapture()
-        self._clipboard = ClipboardServer(on_change=self._on_clipboard_change)
+        self._clipboard = ClipboardServer(on_change=self._on_clipboard_change, compress_images=compress_images)
         self._sel = selectors.DefaultSelector()
         self._active_client_id: Optional[str] = None
         self._running = False
@@ -200,9 +200,7 @@ class ServerApp:
                 client.send(proto.make_control_release())
 
         elif t == MsgType.CLIPBOARD_PUSH:
-            text = msg.get("data", "")
-            if text:
-                self._clipboard.write(text)
+            self._clipboard.write(msg)
 
         elif t == MsgType.PING:
             client.send(proto.make_pong(msg.get("ts", 0)))
@@ -379,8 +377,8 @@ class ServerApp:
     # Clipboard
     # ------------------------------------------------------------------
 
-    def _on_clipboard_change(self, text: str) -> None:
-        self._client_mgr.broadcast(proto.make_clipboard_push(text))
+    def _on_clipboard_change(self, payload: dict) -> None:
+        self._client_mgr.broadcast(payload)
 
     # ------------------------------------------------------------------
     # Placement API (called by GUI)
