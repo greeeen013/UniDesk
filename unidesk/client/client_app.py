@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 class ClientApp:
-    def __init__(self, server_host: str, port: int = TCP_PORT, hide_mouse: bool = False) -> None:
+    def __init__(self, server_host: str, port: int = TCP_PORT, hide_mouse: bool = False, compress_images: bool = False) -> None:
         self.server_host = server_host
         self.port = port
         self._sock: Optional[socket.socket] = None
@@ -33,7 +33,7 @@ class ClientApp:
         self._mouse = MouseSimulator()
         self._keyboard = KeyboardSimulator()
         self._cursor = CursorManager(on_grab_request=self._on_local_grab, hide_mouse=hide_mouse)
-        self._clipboard = ClipboardClient(on_change=self._on_local_clipboard)
+        self._clipboard = ClipboardClient(on_change=self._on_local_clipboard, compress_images=compress_images)
         self.client_id: Optional[str] = None
         self.server_monitors: list[MonitorRect] = []
 
@@ -166,9 +166,7 @@ class ClientApp:
             self._cursor.release_control()
 
         elif t == MsgType.CLIPBOARD_PUSH:
-            text = msg.get("data", "")
-            if text:
-                self._clipboard.write(text)
+            self._clipboard.write(msg)
 
         elif t == MsgType.PING:
             self._send(proto.make_pong(msg.get("ts", 0)))
@@ -185,6 +183,6 @@ class ClientApp:
         log.info("Sending CONTROL_RELEASE_REQUEST")
         self._send(proto.make_control_release_request())
 
-    def _on_local_clipboard(self, text: str) -> None:
+    def _on_local_clipboard(self, payload: dict) -> None:
         """Local clipboard changed — push to server."""
-        self._send(proto.make_clipboard_push(text))
+        self._send(payload)
