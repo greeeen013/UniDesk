@@ -9,6 +9,7 @@ All message dicts must contain a "type" field (see constants.MsgType).
 
 from __future__ import annotations
 
+import base64 as _base64
 import json
 import socket
 import struct
@@ -110,6 +111,16 @@ def make_key_event(vk: int, scan: int, action: str, flags: int = 0) -> dict:
 
 def make_clipboard_push(text: str) -> dict:
     return {"type": MsgType.CLIPBOARD_PUSH, "format": "text", "data": text}
+
+
+def make_clipboard_push_image(data: bytes, encoding: str) -> dict:
+    """encoding: 'dib+b64' (raw DIB) or 'png+b64' (PNG-compressed)."""
+    return {
+        "type": MsgType.CLIPBOARD_PUSH,
+        "format": "image",
+        "encoding": encoding,
+        "data": _base64.b64encode(data).decode("ascii"),
+    }
 
 
 def make_control_grant() -> dict:
