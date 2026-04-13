@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--sensitivity", type=float, default=1.0, help="Mouse sensitivity multiplier when exploring a client monitor (syncs physical DPI gaps)")
     parser.add_argument("--scale-to-snap", action="store_true", help="Scale virtual trigger zone to match the anchor's edge (proportional mapping)")
     parser.add_argument("--hide-mouse", action="store_true", help="Teleport mouse to bottom-right corner when inactive")
+    parser.add_argument("--compress-images", action="store_true", help="Compress image clipboard with PNG before sending (requires Pillow)")
     args = parser.parse_args()
 
     if args.debug:
@@ -44,7 +45,7 @@ def main():
     from unidesk.server.server_app import ServerApp
     from unidesk.gui.main_window import MainWindow
 
-    server = ServerApp(port=args.port, sensitivity=args.sensitivity, scale_to_snap=args.scale_to_snap, hide_mouse=args.hide_mouse)
+    server = ServerApp(port=args.port, sensitivity=args.sensitivity, scale_to_snap=args.scale_to_snap, hide_mouse=args.hide_mouse, compress_images=args.compress_images)
     server.start()
 
     window = MainWindow(server_app=server)
