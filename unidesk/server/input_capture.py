@@ -47,6 +47,24 @@ XBUTTON2 = 0x0002
 PM_REMOVE = 0x0001
 HC_ACTION = 0
 
+SPI_SETCURSORS = 0x0057
+# All standard system cursor IDs — replaced with a blank cursor when hiding
+_SYSTEM_CURSOR_IDS = [
+    32512,  # OCR_NORMAL
+    32513,  # OCR_IBEAM
+    32514,  # OCR_WAIT
+    32515,  # OCR_CROSS
+    32516,  # OCR_UP
+    32642,  # OCR_SIZENWSE
+    32643,  # OCR_SIZENESW
+    32644,  # OCR_SIZEWE
+    32645,  # OCR_SIZENS
+    32646,  # OCR_SIZEALL
+    32648,  # OCR_NO
+    32649,  # OCR_HAND
+    32650,  # OCR_APPSTARTING
+]
+
 _BUTTON_MAP = {
     WM_LBUTTONDOWN: ("left", "press"),
     WM_LBUTTONUP: ("left", "release"),
@@ -317,9 +335,18 @@ class InputCapture:
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def show_cursor(self, visible: bool) -> None:
+        user32 = ctypes.windll.user32
         if visible:
-            while ctypes.windll.user32.ShowCursor(True) < 0:
-                pass
+            # Reload all system cursors from the current cursor scheme in the registry.
+            # This is the documented way to undo SetSystemCursor replacements.
+            user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
         else:
-            while ctypes.windll.user32.ShowCursor(False) >= 0:
-                pass
+            # ShowCursor is per-thread on Windows — calling it from a non-UI thread has
+            # no effect on windows owned by other threads. Instead, replace every system
+            # cursor with an invisible 32×32 cursor; SetSystemCursor is process-agnostic.
+            and_mask = (ctypes.c_ubyte * 128)(*([0xFF] * 128))
+            xor_mask = (ctypes.c_ubyte * 128)(*([0x00] * 128))
+            for cursor_id in _SYSTEM_CURSOR_IDS:
+                blank = user32.CreateCursor(None, 0, 0, 32, 32, and_mask, xor_mask)
+                if blank:
+                    user32.SetSystemCursor(blank, cursor_id)

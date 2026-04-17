@@ -346,7 +346,7 @@ class ServerApp:
             client.send(proto.make_control_grant())
         log.info("Control granted to %s", client_id)
 
-        # NOTE: ShowCursor(False) above already hides the cursor visually.
+        # The cursor is hidden via SetSystemCursor (see show_cursor).
         # We must NOT teleport the cursor elsewhere (e.g. to a corner)
         # because delta tracking relies on the cursor being at the center
         # of the anchor monitor. Windows clamps coordinates at the virtual

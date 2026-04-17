@@ -9,9 +9,11 @@ Tabs:
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import logging
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -40,10 +42,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._server = server_app
         self._signals = _Signals()
+        self._last_active_id: str | None = None
         self._setup_ui()
         self._connect_signals()
         self._setup_tray()
         self._load_server_monitors()
+        self._start_cursor_timer()
 
     # ------------------------------------------------------------------
     # UI setup
@@ -163,6 +167,25 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Misc
     # ------------------------------------------------------------------
+
+    def _start_cursor_timer(self) -> None:
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.timeout.connect(self._update_cursor_display)
+        self._cursor_timer.start(33)  # ~30 Hz
+
+    def _update_cursor_display(self) -> None:
+        active_id = self._server._active_client_id
+        if active_id != self._last_active_id:
+            self._last_active_id = active_id
+            self._layout_widget.set_active_client(active_id)
+
+        if active_id:
+            x, y = self._server._virt_x, self._server._virt_y
+        else:
+            pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            x, y = pt.x, pt.y
+        self._layout_widget.update_cursor(x, y)
 
     def _load_server_monitors(self) -> None:
         monitors = self._server.get_monitors()

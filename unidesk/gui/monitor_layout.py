@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import QColor, QBrush, QPen, QFont
 from PyQt6.QtWidgets import (
-    QGraphicsScene, QGraphicsView, QGraphicsRectItem,
+    QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
     QGraphicsTextItem, QGraphicsItem,
 )
 
@@ -73,6 +73,7 @@ class ClientMonitorItem(QGraphicsRectItem):
         self.client_id = client_id
         self.hostname = hostname
         self.client_monitor = monitor
+        self._color = color
         self._server_items = server_items
         self._on_placed = on_placed
 
@@ -90,6 +91,20 @@ class ClientMonitorItem(QGraphicsRectItem):
         font.setPointSize(7)
         label.setFont(font)
         label.setPos(4, 4)
+
+    def set_highlight(self, active: Optional[bool]) -> None:
+        """active=True: highlighted; active=False: dimmed; active=None: normal."""
+        if active is True:
+            self.setBrush(QBrush(self._color))
+            self.setPen(QPen(QColor(255, 220, 50), 3))
+        elif active is False:
+            dim = QColor(self._color)
+            dim.setAlpha(80)
+            self.setBrush(QBrush(dim))
+            self.setPen(QPen(self._color.darker(150), 1))
+        else:
+            self.setBrush(QBrush(self._color))
+            self.setPen(QPen(self._color.darker(130), 2))
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
@@ -156,6 +171,14 @@ class MonitorLayoutWidget(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
 
+        dot_r = 5
+        self._cursor_dot = QGraphicsEllipseItem(-dot_r, -dot_r, dot_r * 2, dot_r * 2)
+        self._cursor_dot.setBrush(QBrush(QColor(255, 80, 80)))
+        self._cursor_dot.setPen(QPen(QColor(255, 255, 255), 1.5))
+        self._cursor_dot.setZValue(10)
+        self._cursor_dot.hide()
+        self._scene.addItem(self._cursor_dot)
+
     def set_server_monitors(self, monitors: list[MonitorRect]) -> None:
         """Rebuild server monitor display."""
         for item in self._server_items:
@@ -203,3 +226,14 @@ class MonitorLayoutWidget(QGraphicsView):
         item = self._client_items.pop(client_id, None)
         if item:
             self._scene.removeItem(item)
+
+    def set_active_client(self, client_id: Optional[str]) -> None:
+        for cid, item in self._client_items.items():
+            if client_id is None:
+                item.set_highlight(None)
+            else:
+                item.set_highlight(cid == client_id)
+
+    def update_cursor(self, x: float, y: float) -> None:
+        self._cursor_dot.setPos(x / GUI_SCALE, y / GUI_SCALE)
+        self._cursor_dot.show()
