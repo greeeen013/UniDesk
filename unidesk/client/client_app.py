@@ -15,6 +15,7 @@ from typing import Optional
 from ..common import protocol as proto
 from ..common.config import MonitorRect
 from ..common.constants import TCP_PORT, MsgType, HEARTBEAT_INTERVAL
+from ..common.discovery import discover_server
 from .clipboard_client import ClipboardClient
 from .cursor_manager import CursorManager
 from .input_simulator import MouseSimulator, KeyboardSimulator
@@ -24,8 +25,8 @@ log = logging.getLogger(__name__)
 
 
 class ClientApp:
-    def __init__(self, server_host: str, port: int = TCP_PORT, hide_mouse: bool = False, compress_images: bool = False) -> None:
-        self.server_host = server_host
+    def __init__(self, server_host: Optional[str], port: int = TCP_PORT, hide_mouse: bool = False, compress_images: bool = False) -> None:
+        self.server_host = server_host  # None = auto-discover
         self.port = port
         self._sock: Optional[socket.socket] = None
         self._running = False
@@ -35,6 +36,7 @@ class ClientApp:
         self._cursor = CursorManager(on_grab_request=self._on_local_grab, hide_mouse=hide_mouse)
         self._clipboard = ClipboardClient(on_change=self._on_local_clipboard, compress_images=compress_images)
         self.client_id: Optional[str] = None
+        self.connected_host: Optional[str] = None  # set after successful connection
         self.server_monitors: list[MonitorRect] = []
 
         # Callbacks for GUI / tray
@@ -66,17 +68,28 @@ class ClientApp:
         """Attempt to connect, reconnect on failure."""
         while self._running:
             try:
-                self._connect()
+                host = self.server_host
+                port = self.port
+                if host is None:
+                    log.info("Auto-discovering server on local network...")
+                    result = discover_server()
+                    if result is None:
+                        log.warning("No server found — retrying in 5s")
+                        time.sleep(5)
+                        continue
+                    host, port = result
+                self._connect(host, port)
             except Exception as exc:
                 log.warning("Connection error: %s — retrying in 5s", exc)
                 time.sleep(5)
 
-    def _connect(self) -> None:
-        log.info("Connecting to %s:%d", self.server_host, self.port)
+    def _connect(self, host: str, port: int) -> None:
+        log.info("Connecting to %s:%d", host, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.connect((self.server_host, self.port))
+        sock.connect((host, port))
         self._sock = sock
+        self.connected_host = host
 
         import socket as _socket
         hostname = _socket.gethostname()

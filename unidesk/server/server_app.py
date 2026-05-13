@@ -25,6 +25,7 @@ from typing import Optional
 from ..common import protocol as proto
 from ..common.config import MonitorRect, VirtualPlacement
 from ..common.constants import TCP_PORT, MsgType, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
+from ..common.discovery import DiscoveryServer
 from .client_manager import ClientManager, ConnectedClient
 from .clipboard_server import ClipboardServer
 from .edge_detector import EdgeDetector
@@ -45,6 +46,7 @@ class ServerApp:
         self._edge = EdgeDetector([], scale_to_snap=scale_to_snap)
         self._capture = InputCapture()
         self._clipboard = ClipboardServer(on_change=self._on_clipboard_change, compress_images=compress_images)
+        self._discovery = DiscoveryServer(tcp_port=port)
         self._sel = selectors.DefaultSelector()
         self._active_client_id: Optional[str] = None
         self._running = False
@@ -77,6 +79,7 @@ class ServerApp:
 
         self._capture.start()
         self._clipboard.start()
+        self._discovery.start()
 
         self._running = True
         self._event_thread = threading.Thread(
@@ -100,6 +103,7 @@ class ServerApp:
         self._running = False
         self._capture.stop()
         self._clipboard.stop()
+        self._discovery.stop()
 
     # ------------------------------------------------------------------
     # Network

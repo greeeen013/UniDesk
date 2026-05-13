@@ -2,7 +2,9 @@
 UniDesk — Client entry point.
 
 Usage:
-    python main_client.py --server SERVER_IP [--port PORT]
+    python main_client.py [--server SERVER_IP] [--port PORT]
+
+If --server is omitted, the client auto-discovers the server via UDP broadcast.
 
 Requires: Windows, PyQt6, pywin32
 Admin rights: NOT required for basic use.
@@ -22,10 +24,10 @@ logging.basicConfig(
 
 def main():
     parser = argparse.ArgumentParser(description="UniDesk client (other station)")
-    parser.add_argument("--server", required=True, help="Server IP address or hostname")
+    parser.add_argument("--server", default=None, help="Server IP address or hostname (omit to auto-discover)")
     parser.add_argument("--port", type=int, default=25432, help="Server TCP port")
     parser.add_argument("--admin", action="store_true", help="Request administrator privileges to bypass UIPI (e.g., clicking on Taskbar)")
-    parser.add_argument("--hide-mouse", action="store_true", help="Teleport mouse to bottom-right corner when inactive")
+    parser.add_argument("--hide-mouse", default=True, action=argparse.BooleanOptionalAction, help="Teleport mouse to bottom-right corner when inactive (default: on)")
     parser.add_argument("--compress-images", action="store_true", help="Compress image clipboard with PNG before sending (requires Pillow)")
     args = parser.parse_args()
 
@@ -54,7 +56,7 @@ def main():
     pix = QPixmap(16, 16)
     pix.fill(QColor("#2196f3"))
     tray = QSystemTrayIcon(QIcon(pix))
-    tray.setToolTip(f"UniDesk client → {args.server}")
+    tray.setToolTip(f"UniDesk client → {args.server or 'auto-discover'}")
 
     from PyQt6.QtWidgets import QMenu
     menu = QMenu()
@@ -64,7 +66,7 @@ def main():
     tray.show()
 
     def on_connected():
-        tray.showMessage("UniDesk", f"Connected to {args.server}", QSystemTrayIcon.MessageIcon.Information, 2000)
+        tray.showMessage("UniDesk", f"Connected to {client.connected_host or 'server'}", QSystemTrayIcon.MessageIcon.Information, 2000)
         pix2 = QPixmap(16, 16)
         pix2.fill(QColor("#4caf50"))
         tray.setIcon(QIcon(pix2))

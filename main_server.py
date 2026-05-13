@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--shutdown", type=int, default=0, help="Automatically shutdown after SECONDS (for debugging)")
     parser.add_argument("--sensitivity", type=float, default=1.0, help="Mouse sensitivity multiplier when exploring a client monitor (syncs physical DPI gaps)")
     parser.add_argument("--scale-to-snap", action="store_true", help="Scale virtual trigger zone to match the anchor's edge (proportional mapping)")
-    parser.add_argument("--hide-mouse", action="store_true", help="Teleport mouse to bottom-right corner when inactive")
+    parser.add_argument("--hide-mouse", default=True, action=argparse.BooleanOptionalAction, help="Teleport mouse to bottom-right corner when inactive (default: on)")
     parser.add_argument("--compress-images", action="store_true", help="Compress image clipboard with PNG before sending (requires Pillow)")
     args = parser.parse_args()
 
