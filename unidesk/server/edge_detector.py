@@ -67,12 +67,16 @@ def compute_virtual_rect(
             top = anchor.top + off
             bottom = top + client_monitor.height
         elif edge == "bottom":
-            top = anchor.bottom
+            # Overlap the last row of the server monitor so the cursor can
+            # physically reach the zone (the cursor is clamped within the
+            # virtual desktop and cannot exceed anchor.bottom).
+            top = anchor.bottom - 1
             bottom = top + client_monitor.height
             left = anchor.left + off
             right = left + client_monitor.width
         elif edge == "top":
-            bottom = anchor.top
+            # Mirror of "bottom": overlap the first row.
+            bottom = anchor.top + 1
             top = bottom - client_monitor.height
             left = anchor.left + off
             right = left + client_monitor.width

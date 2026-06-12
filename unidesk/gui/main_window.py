@@ -35,6 +35,7 @@ class _Signals(QObject):
     client_connected = pyqtSignal(str, str, object)    # client_id, hostname, monitor
     client_disconnected = pyqtSignal(str)              # client_id
     monitors_changed = pyqtSignal(object)              # list[MonitorRect]
+    placement_restored = pyqtSignal(str, object)       # client_id, VirtualPlacement
 
 
 class MainWindow(QMainWindow):
@@ -95,6 +96,11 @@ class MainWindow(QMainWindow):
         self._clipboard_check.setChecked(True)
         form.addRow("Clipboard:", self._clipboard_check)
 
+        self._snap_check = QCheckBox("Auto-snap client monitor to server edge on drop")
+        self._snap_check.setChecked(True)
+        self._snap_check.stateChanged.connect(self._on_snap_changed)
+        form.addRow("Snap to edge:", self._snap_check)
+
         layout.addLayout(form)
         layout.addStretch()
         return w
@@ -114,11 +120,13 @@ class MainWindow(QMainWindow):
         self._signals.client_connected.connect(self._on_client_connected_gui)
         self._signals.client_disconnected.connect(self._on_client_disconnected_gui)
         self._signals.monitors_changed.connect(self._on_monitors_changed_gui)
+        self._signals.placement_restored.connect(self._on_placement_restored_gui)
 
         # Wire server callbacks → signals (called from non-GUI threads)
         self._server.on_client_connected = self._emit_client_connected
         self._server.on_client_disconnected = self._emit_client_disconnected
         self._server.on_monitors_changed = self._emit_monitors_changed
+        self._server.on_placement_restored = self._emit_placement_restored
 
     # ------------------------------------------------------------------
     # Thread-safe emitters (called from server threads)
@@ -133,6 +141,9 @@ class MainWindow(QMainWindow):
 
     def _emit_monitors_changed(self, monitors: list[MonitorRect]) -> None:
         self._signals.monitors_changed.emit(monitors)
+
+    def _emit_placement_restored(self, placement: VirtualPlacement) -> None:
+        self._signals.placement_restored.emit(placement.client_id, placement)
 
     # ------------------------------------------------------------------
     # GUI slots (always on main thread)
@@ -158,6 +169,12 @@ class MainWindow(QMainWindow):
         client = self._server._client_mgr.get(placement.client_id)
         if client and client.monitors:
             self._server.set_placement(placement, client.monitors[0])
+
+    def _on_placement_restored_gui(self, client_id: str, placement) -> None:
+        self._layout_widget.restore_client_placement(client_id, placement)
+
+    def _on_snap_changed(self, state: int) -> None:
+        self._layout_widget.set_snap_enabled(bool(state))
 
     def _on_disconnect_client(self, client_id: str) -> None:
         client = self._server._client_mgr.get(client_id)

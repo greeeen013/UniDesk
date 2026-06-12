@@ -14,6 +14,7 @@ Call ServerApp.run() — it blocks until stopped.
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import logging
 import queue
 import selectors
@@ -33,6 +34,17 @@ from .input_capture import InputCapture
 from .monitor_info import get_monitors, get_virtual_desktop_rect
 
 log = logging.getLogger(__name__)
+
+_FULLSCREEN_CACHE_TTL = 0.25  # seconds
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize",    ctypes.wintypes.DWORD),
+        ("rcMonitor", ctypes.wintypes.RECT),
+        ("rcWork",    ctypes.wintypes.RECT),
+        ("dwFlags",   ctypes.wintypes.DWORD),
+    ]
 
 
 class ServerApp:
@@ -63,6 +75,14 @@ class ServerApp:
         self.on_client_connected: Optional[callable] = None
         self.on_client_disconnected: Optional[callable] = None
         self.on_monitors_changed: Optional[callable] = None
+        self.on_placement_restored: Optional[callable] = None
+
+        # In-memory placement store: hostname → (anchor_monitor_id, anchor_edge, offset_pixels)
+        # Persists across client reconnects for the lifetime of the server process.
+        self._placement_memory: dict[str, tuple[int, str, int]] = {}
+
+        # Fullscreen detection cache: (monotonic_ts, is_fullscreen)
+        self._fullscreen_cache: tuple[float, bool] = (0.0, False)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -194,6 +214,18 @@ class ServerApp:
             log.info("Client %s reported %d monitor(s)", client.hostname, len(monitors))
             if self.on_client_connected:
                 self.on_client_connected(client)  # refresh GUI
+            if monitors and client.hostname in self._placement_memory:
+                anchor_id, anchor_edge, offset_px = self._placement_memory[client.hostname]
+                placement = VirtualPlacement(
+                    client_id=client.client_id,
+                    anchor_monitor_id=anchor_id,
+                    anchor_edge=anchor_edge,
+                    offset_pixels=offset_px,
+                )
+                self._edge.update_placement(placement, monitors[0])
+                log.info("Restored placement for %s (%s edge, anchor %d)", client.hostname, anchor_edge, anchor_id)
+                if self.on_placement_restored:
+                    self.on_placement_restored(placement)
 
         elif t == MsgType.PONG:
             client.last_pong = time.time()
@@ -228,6 +260,14 @@ class ServerApp:
             x, y = ev["x"], ev["y"]
 
             if self._active_client_id:
+                # Release client control when a fullscreen game is in the foreground.
+                # A fullscreen game warps the cursor and fights our delta tracking —
+                # better to hand it back immediately.
+                if self._is_fullscreen_foreground():
+                    log.debug("Fullscreen window detected — releasing client control")
+                    self._release_control()
+                    return
+
                 zone = self._edge.get_zone(self._active_client_id)
                 if not zone:
                     return
@@ -269,9 +309,13 @@ class ServerApp:
                         "Virtual cursor (%.0f, %.0f) left zone %s → releasing",
                         self._virt_x, self._virt_y, zone.client_id,
                     )
-                    # Warp physical cursor precisely back to the crossing point
-                    ret_x = max(anchor.left, min(anchor.right - 1, int(self._virt_x)))
-                    ret_y = max(anchor.top, min(anchor.bottom - 1, int(self._virt_y)))
+                    # Warp cursor back to the crossing point, clamped to the full
+                    # virtual desktop. Using anchor-only bounds would clip _virt_x/y
+                    # to the anchor monitor even when the zone spans multiple monitors
+                    # (e.g. a "bottom" zone that straddles M1 and M2).
+                    vl, vt, vw, vh = get_virtual_desktop_rect()
+                    ret_x = max(vl, min(vl + vw - 1, int(self._virt_x)))
+                    ret_y = max(vt, min(vt + vh - 1, int(self._virt_y)))
                     self._capture.set_cursor_pos(ret_x, ret_y)
 
                     self._release_control()
@@ -297,6 +341,11 @@ class ServerApp:
                 # Therefore we do NOT update `_last_raw`; it acts as the eternal origin point.
 
             else:
+                # Skip edge detection when a fullscreen window has the foreground —
+                # prevents cursor warps at game launch from accidentally triggering a grant.
+                if self._is_fullscreen_foreground():
+                    return
+
                 # Check if cursor entered a virtual zone
                 result = self._edge.hit_test(x, y)
                 if result:
@@ -341,6 +390,14 @@ class ServerApp:
             self._last_raw_x = (anchor.left + anchor.right) // 2
             self._last_raw_y = (anchor.top + anchor.bottom) // 2
             self._capture.set_cursor_pos(self._last_raw_x, self._last_raw_y)
+            # For bottom/top edges the trigger zone overlaps the server monitor
+            # boundary by 1px. Push _virt into the zone so micro-jitter doesn't
+            # immediately fire the release condition.
+            edge = zone.placement.anchor_edge
+            if edge == "bottom":
+                self._virt_y = float(zone.rect.top) + 5
+            elif edge == "top":
+                self._virt_y = float(zone.rect.bottom) - 5
         else:
             self._last_raw_x = hit_x
             self._last_raw_y = hit_y
@@ -378,6 +435,56 @@ class ServerApp:
         log.info("Control returned to server")
 
     # ------------------------------------------------------------------
+    # Fullscreen detection
+    # ------------------------------------------------------------------
+
+    def _is_fullscreen_foreground(self) -> bool:
+        """Return True if the foreground window covers an entire monitor.
+
+        Result is cached for _FULLSCREEN_CACHE_TTL seconds to avoid a Win32
+        round-trip on every mouse-move event.
+        """
+        now = time.monotonic()
+        ts, cached = self._fullscreen_cache
+        if now - ts < _FULLSCREEN_CACHE_TTL:
+            return cached
+        result = self._check_fullscreen_win32()
+        self._fullscreen_cache = (now, result)
+        return result
+
+    def _check_fullscreen_win32(self) -> bool:
+        try:
+            user32 = ctypes.windll.user32
+            # HWND and HMONITOR are pointer-sized; default restype (c_int) truncates on 64-bit.
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            user32.MonitorFromWindow.restype   = ctypes.c_void_p
+            user32.GetMonitorInfoW.argtypes    = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return False
+
+            win_rect = ctypes.wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(win_rect))
+
+            monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+            if not monitor:
+                return False
+
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
+
+            return (
+                win_rect.left  <= mi.rcMonitor.left  and
+                win_rect.top   <= mi.rcMonitor.top   and
+                win_rect.right >= mi.rcMonitor.right and
+                win_rect.bottom >= mi.rcMonitor.bottom
+            )
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
     # Clipboard
     # ------------------------------------------------------------------
 
@@ -390,6 +497,13 @@ class ServerApp:
 
     def set_placement(self, placement: VirtualPlacement, client_monitor: MonitorRect) -> None:
         self._edge.update_placement(placement, client_monitor)
+        client = self._client_mgr.get(placement.client_id)
+        if client:
+            self._placement_memory[client.hostname] = (
+                placement.anchor_monitor_id,
+                placement.anchor_edge,
+                placement.offset_pixels,
+            )
         log.info("Placement updated for %s", placement.client_id)
 
     def get_monitors(self) -> list[MonitorRect]:

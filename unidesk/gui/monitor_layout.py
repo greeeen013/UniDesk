@@ -11,6 +11,7 @@ Scale: GUI_SCALE pixels per real pixel (default 10 → 1920px monitor = 192 unit
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt, QRectF, QPointF
@@ -69,6 +70,8 @@ class ClientMonitorItem(QGraphicsRectItem):
         color: QColor,
         server_items: list[ServerMonitorItem],
         on_placed: Callable[[VirtualPlacement], None],
+        on_snap_preview: Optional[Callable] = None,
+        get_snap_enabled: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.client_id = client_id
         self.hostname = hostname
@@ -76,6 +79,8 @@ class ClientMonitorItem(QGraphicsRectItem):
         self._color = color
         self._server_items = server_items
         self._on_placed = on_placed
+        self._on_snap_preview = on_snap_preview
+        self._get_snap_enabled = get_snap_enabled or (lambda: True)
 
         r = QRectF(0, 0, monitor.width / GUI_SCALE, monitor.height / GUI_SCALE)
         super().__init__(r)
@@ -106,34 +111,63 @@ class ClientMonitorItem(QGraphicsRectItem):
             self.setBrush(QBrush(self._color))
             self.setPen(QPen(self._color.darker(130), 2))
 
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        if self._on_snap_preview:
+            if self._get_snap_enabled():
+                snap = self._find_best_snap()
+                self._on_snap_preview((snap[0], snap[1]) if snap else None)
+            else:
+                self._on_snap_preview(None)
+
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
+        if self._on_snap_preview:
+            self._on_snap_preview(None)
         self._snap_and_notify()
 
-    def _snap_and_notify(self) -> None:
-        """Snap to nearest server monitor edge and emit placement."""
-        best: Optional[tuple[float, VirtualPlacement, QPointF]] = None
+    def _find_best_snap(self):
+        """
+        Return (edge, srv_r, placement, snap_pos) for the nearest snap candidate,
+        or None if there are no server monitors.
 
+        Distance metric: 2D Euclidean distance from the client's CENTER to the
+        nearest point on each edge segment of each server monitor. This gives
+        intuitive results when the client overlaps a corner — the edge whose
+        face is geometrically closest wins, rather than whichever axis-aligned
+        component happens to be smaller.
+        """
+        best_dist = float("inf")
+        best = None
         my_r = self.sceneBoundingRect()
+        cx = my_r.left() + my_r.width() / 2
+        cy = my_r.top() + my_r.height() / 2
 
         for srv_item in self._server_items:
             srv_r = srv_item.sceneBoundingRect()
             mon = srv_item.monitor
 
+            # Nearest point on the vertical (right/left) and horizontal
+            # (bottom/top) edge segments to the client center.
+            ny = max(srv_r.top(), min(srv_r.bottom(), cy))
+            nx = max(srv_r.left(), min(srv_r.right(), cx))
+
             candidates = [
-                ("right",  QPointF(srv_r.right(), srv_r.top()),
-                 abs(my_r.left() - srv_r.right())),
-                ("left",   QPointF(srv_r.left() - my_r.width(), srv_r.top()),
-                 abs(my_r.right() - srv_r.left())),
-                ("bottom", QPointF(srv_r.left(), srv_r.bottom()),
-                 abs(my_r.top() - srv_r.bottom())),
-                ("top",    QPointF(srv_r.left(), srv_r.top() - my_r.height()),
-                 abs(my_r.bottom() - srv_r.top())),
+                # snap_pos: only the perpendicular axis snaps; the parallel axis
+                # keeps the client's current position so it doesn't jump to corners.
+                ("right",  QPointF(srv_r.right(), my_r.top()),
+                 math.hypot(cx - srv_r.right(), cy - ny)),
+                ("left",   QPointF(srv_r.left() - my_r.width(), my_r.top()),
+                 math.hypot(cx - srv_r.left(), cy - ny)),
+                ("bottom", QPointF(my_r.left(), srv_r.bottom()),
+                 math.hypot(cx - nx, cy - srv_r.bottom())),
+                ("top",    QPointF(my_r.left(), srv_r.top() - my_r.height()),
+                 math.hypot(cx - nx, cy - srv_r.top())),
             ]
 
             for edge, snap_pos, dist in candidates:
-                if best is None or dist < best[0]:
-                    # Compute pixel offset along the edge
+                if dist < best_dist:
+                    best_dist = dist
                     if edge in ("right", "left"):
                         offset = int((my_r.top() - srv_r.top()) * GUI_SCALE)
                     else:
@@ -144,11 +178,16 @@ class ClientMonitorItem(QGraphicsRectItem):
                         anchor_edge=edge,
                         offset_pixels=offset,
                     )
-                    best = (dist, placement, snap_pos)
+                    best = (edge, srv_r, placement, snap_pos)
 
-        if best:
-            _, placement, snap_pos = best
-            self.setPos(snap_pos)
+        return best
+
+    def _snap_and_notify(self) -> None:
+        result = self._find_best_snap()
+        if result:
+            edge, srv_r, placement, snap_pos = result
+            if self._get_snap_enabled():
+                self.setPos(snap_pos)
             self._on_placed(placement)
 
 
@@ -167,9 +206,17 @@ class MonitorLayoutWidget(QGraphicsView):
         self._server_items: list[ServerMonitorItem] = []
         self._client_items: dict[str, ClientMonitorItem] = {}
         self._color_idx = 0
+        self._snap_enabled = True
 
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
+
+        self._snap_indicator = QGraphicsRectItem()
+        self._snap_indicator.setBrush(QBrush(QColor(255, 215, 0, 210)))
+        self._snap_indicator.setPen(QPen(QColor(255, 170, 0, 180), 0.5))
+        self._snap_indicator.setZValue(5)
+        self._snap_indicator.hide()
+        self._scene.addItem(self._snap_indicator)
 
         dot_r = 5
         self._cursor_dot = QGraphicsEllipseItem(-dot_r, -dot_r, dot_r * 2, dot_r * 2)
@@ -178,6 +225,11 @@ class MonitorLayoutWidget(QGraphicsView):
         self._cursor_dot.setZValue(10)
         self._cursor_dot.hide()
         self._scene.addItem(self._cursor_dot)
+
+    def set_snap_enabled(self, enabled: bool) -> None:
+        self._snap_enabled = enabled
+        if not enabled:
+            self._snap_indicator.hide()
 
     def set_server_monitors(self, monitors: list[MonitorRect]) -> None:
         """Rebuild server monitor display."""
@@ -212,6 +264,8 @@ class MonitorLayoutWidget(QGraphicsView):
             color=color,
             server_items=self._server_items,
             on_placed=self._on_placement_changed,
+            on_snap_preview=self._update_snap_preview,
+            get_snap_enabled=lambda: self._snap_enabled,
         )
         # Default position: to the right of the rightmost server monitor
         if self._server_items:
@@ -233,6 +287,44 @@ class MonitorLayoutWidget(QGraphicsView):
                 item.set_highlight(None)
             else:
                 item.set_highlight(cid == client_id)
+
+    def _update_snap_preview(self, snap: Optional[tuple]) -> None:
+        """Show a highlight strip on the edge where the dragged client will snap."""
+        if snap is None:
+            self._snap_indicator.hide()
+            return
+        edge, srv_r = snap
+        THICK = 3.0
+        if edge == "right":
+            r = QRectF(srv_r.right() - THICK / 2, srv_r.top(), THICK, srv_r.height())
+        elif edge == "left":
+            r = QRectF(srv_r.left() - THICK / 2, srv_r.top(), THICK, srv_r.height())
+        elif edge == "bottom":
+            r = QRectF(srv_r.left(), srv_r.bottom() - THICK / 2, srv_r.width(), THICK)
+        else:  # top
+            r = QRectF(srv_r.left(), srv_r.top() - THICK / 2, srv_r.width(), THICK)
+        self._snap_indicator.setRect(r)
+        self._snap_indicator.show()
+
+    def restore_client_placement(self, client_id: str, placement: VirtualPlacement) -> None:
+        """Reposition a client's monitor block to match a restored VirtualPlacement."""
+        item = self._client_items.get(client_id)
+        if not item or placement.anchor_monitor_id >= len(self._server_items):
+            return
+        srv_item = self._server_items[placement.anchor_monitor_id]
+        srv_r = srv_item.sceneBoundingRect()
+        item_r = item.boundingRect()
+        off = placement.offset_pixels / GUI_SCALE
+        edge = placement.anchor_edge
+        if edge == "right":
+            pos = QPointF(srv_r.right(), srv_r.top() + off)
+        elif edge == "left":
+            pos = QPointF(srv_r.left() - item_r.width(), srv_r.top() + off)
+        elif edge == "bottom":
+            pos = QPointF(srv_r.left() + off, srv_r.bottom())
+        else:  # top
+            pos = QPointF(srv_r.left() + off, srv_r.top() - item_r.height())
+        item.setPos(pos)
 
     def update_cursor(self, x: float, y: float) -> None:
         self._cursor_dot.setPos(x / GUI_SCALE, y / GUI_SCALE)
