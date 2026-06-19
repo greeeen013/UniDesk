@@ -15,6 +15,9 @@ import ctypes
 import ctypes.wintypes
 import hashlib
 import logging
+import os
+import struct
+import tempfile
 import threading
 from typing import Callable, Optional
 
@@ -25,7 +28,15 @@ WM_DESTROY = 0x0002
 
 CF_UNICODETEXT = 13
 CF_DIB = 8
+CF_HDROP = 15
 GMEM_MOVEABLE = 0x0002
+
+# Limits sized to finish within HEARTBEAT_TIMEOUT (10 s) even on slow WiFi.
+# Proper fix for large files is a dedicated transfer channel (like audio uses).
+_FILE_SIZE_LIMIT  = 5  * 1024 * 1024   # 5 MB per file
+_FILE_TOTAL_LIMIT = 10 * 1024 * 1024   # 10 MB across all files in one batch
+
+_TEMP_DIR = os.path.join(tempfile.gettempdir(), "UniDesk_clipboard")
 
 
 class ClipboardServer:
@@ -40,6 +51,7 @@ class ClipboardServer:
         self._compress_images = compress_images
         self._last_text: Optional[str] = None
         self._last_image_hash: Optional[str] = None
+        self._last_files_sig: frozenset = frozenset()
         self._suppress_count: int = 0
         self._hwnd: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
@@ -75,6 +87,18 @@ class ClipboardServer:
                 data = dib
             self._set_clipboard_image(data)
             self._last_image_hash = hashlib.md5(data).hexdigest()
+        elif fmt == "files":
+            files = payload.get("files", [])
+            if not files:
+                self._suppress_count -= 1
+                return
+            temp_paths = _write_files_to_temp(files)
+            if not temp_paths:
+                self._suppress_count -= 1
+                return
+            self._set_clipboard_files(temp_paths)
+            self._last_files_sig = _files_signature(temp_paths)
+            log.debug("Clipboard written: %d file(s) from network", len(temp_paths))
 
     # ------------------------------------------------------------------
     # Internal
@@ -197,12 +221,31 @@ class ClipboardServer:
         if text is not None and text != self._last_text:
             self._last_text = text
             self._last_image_hash = None
+            self._last_files_sig = frozenset()
             log.debug("Clipboard changed: text (%d chars)", len(text))
             try:
                 from ..common.protocol import make_clipboard_push
                 self._on_change(make_clipboard_push(text))
             except Exception as exc:
                 log.warning("Clipboard callback error: %s", exc)
+            return
+
+        # Files (CF_HDROP) — checked before image so directories don't fall through to DIB
+        file_paths = self._get_clipboard_files()
+        if file_paths is not None:
+            sig = _files_signature(file_paths)
+            if sig and sig != self._last_files_sig:
+                self._last_files_sig = sig
+                self._last_text = None
+                self._last_image_hash = None
+                log.debug("Clipboard changed: %d file(s)", len(file_paths))
+                try:
+                    files_data = _read_files(file_paths)
+                    if files_data:
+                        from ..common.protocol import make_clipboard_push_files
+                        self._on_change(make_clipboard_push_files(files_data))
+                except Exception as exc:
+                    log.warning("Clipboard files callback error: %s", exc)
             return
 
         # Image fallback
@@ -213,6 +256,7 @@ class ClipboardServer:
                 return
             self._last_image_hash = h
             self._last_text = None
+            self._last_files_sig = frozenset()
             log.debug("Clipboard changed: image (%d bytes DIB)", len(dib))
             try:
                 from ..common.protocol import make_clipboard_push_image
@@ -331,6 +375,96 @@ class ClipboardServer:
         finally:
             user32.CloseClipboard()
 
+    def _get_clipboard_files(self) -> Optional[list[str]]:
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+
+        user32.OpenClipboard.restype = ctypes.wintypes.BOOL
+        user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+        user32.CloseClipboard.restype = ctypes.wintypes.BOOL
+        user32.CloseClipboard.argtypes = []
+        user32.GetClipboardData.restype = ctypes.wintypes.HANDLE
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        shell32.DragQueryFileW.restype = ctypes.c_uint
+        shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+
+        paths: list[str] = []
+        try:
+            if not user32.OpenClipboard(None):
+                return None
+            h = user32.GetClipboardData(CF_HDROP)
+            if not h:
+                return None
+            count = shell32.DragQueryFileW(h, 0xFFFFFFFF, None, 0)
+            for i in range(count):
+                buf = ctypes.create_unicode_buffer(32768)
+                if shell32.DragQueryFileW(h, i, buf, 32768) > 0:
+                    paths.append(buf.value)
+        except Exception as exc:
+            log.warning("GetClipboardData(CF_HDROP) error: %s", exc)
+            paths = []
+        finally:
+            user32.CloseClipboard()
+        return paths if paths else None
+
+    def _set_clipboard_files(self, paths: list[str]) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.OpenClipboard.restype = ctypes.wintypes.BOOL
+        user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+        user32.EmptyClipboard.restype = ctypes.wintypes.BOOL
+        user32.EmptyClipboard.argtypes = []
+        user32.SetClipboardData.restype = ctypes.wintypes.HANDLE
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.wintypes.HANDLE]
+        user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+        user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+        kernel32.GlobalAlloc.restype = ctypes.wintypes.HANDLE
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+        kernel32.GlobalUnlock.argtypes = [ctypes.wintypes.HANDLE]
+
+        # DROPFILES header (20 bytes): pFiles=20, pt=(0,0), fNC=0, fWide=1
+        file_list_bytes = ("".join(p + "\x00" for p in paths) + "\x00").encode("utf-16-le")
+        hdr = struct.pack("<IIIII", 20, 0, 0, 0, 1)
+        data = hdr + file_list_bytes
+
+        # "Preferred DropEffect" = DROPEFFECT_COPY (5) so Explorer copies, not moves, temp files
+        cf_drop_effect = user32.RegisterClipboardFormatW("Preferred DropEffect")
+        drop_effect = struct.pack("<I", 5)
+
+        try:
+            if not user32.OpenClipboard(None):
+                return
+            user32.EmptyClipboard()
+
+            h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            if h:
+                ptr = kernel32.GlobalLock(h)
+                if ptr:
+                    try:
+                        ctypes.memmove(ptr, data, len(data))
+                        user32.SetClipboardData(CF_HDROP, h)
+                    finally:
+                        kernel32.GlobalUnlock(h)
+
+            if cf_drop_effect:
+                h2 = kernel32.GlobalAlloc(GMEM_MOVEABLE, 4)
+                if h2:
+                    ptr2 = kernel32.GlobalLock(h2)
+                    if ptr2:
+                        try:
+                            ctypes.memmove(ptr2, drop_effect, 4)
+                            user32.SetClipboardData(cf_drop_effect, h2)
+                        finally:
+                            kernel32.GlobalUnlock(h2)
+        except Exception as exc:
+            log.warning("SetClipboardData(CF_HDROP) error: %s", exc)
+        finally:
+            user32.CloseClipboard()
+
     def _set_clipboard_image(self, dib: bytes) -> None:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
@@ -365,6 +499,69 @@ class ClipboardServer:
             log.warning("SetClipboardData(CF_DIB) error: %s", exc)
         finally:
             user32.CloseClipboard()
+
+
+# ---------------------------------------------------------------------------
+# File clipboard helpers
+# ---------------------------------------------------------------------------
+
+def _files_signature(paths: list[str]) -> frozenset:
+    sig = set()
+    for p in paths:
+        try:
+            if os.path.isfile(p):
+                st = os.stat(p)
+                sig.add((p, st.st_size, st.st_mtime_ns))
+        except OSError:
+            pass
+    return frozenset(sig)
+
+
+def _read_files(paths: list[str]) -> list[dict]:
+    result: list[dict] = []
+    total = 0
+    for path in paths:
+        if not os.path.isfile(path):
+            log.debug("Skipping non-file clipboard entry: %s", path)
+            continue
+        size = os.path.getsize(path)
+        if size > _FILE_SIZE_LIMIT:
+            log.warning(
+                "Skipping file too large for clipboard sync (%d MB): %s",
+                size // (1024 * 1024), os.path.basename(path),
+            )
+            continue
+        if total + size > _FILE_TOTAL_LIMIT:
+            log.warning("Clipboard file batch limit reached — skipping remaining files")
+            break
+        with open(path, "rb") as f:
+            data = f.read()
+        result.append({"name": os.path.basename(path), "data": base64.b64encode(data).decode("ascii")})
+        total += size
+    return result
+
+
+def _write_files_to_temp(files: list[dict]) -> list[str]:
+    os.makedirs(_TEMP_DIR, exist_ok=True)
+    for name in os.listdir(_TEMP_DIR):
+        try:
+            os.remove(os.path.join(_TEMP_DIR, name))
+        except OSError:
+            pass
+    paths: list[str] = []
+    for file_info in files:
+        safe_name = os.path.basename(file_info.get("name", ""))
+        if not safe_name:
+            continue
+        dest = os.path.join(_TEMP_DIR, safe_name)
+        try:
+            raw = base64.b64decode(file_info["data"])
+            with open(dest, "wb") as f:
+                f.write(raw)
+            paths.append(dest)
+        except Exception as exc:
+            log.warning("Failed to write temp file %s: %s", safe_name, exc)
+    return paths
 
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,11 @@ def make_clipboard_push_image(data: bytes, encoding: str) -> dict:
     }
 
 
+def make_clipboard_push_files(files: list[dict]) -> dict:
+    """files: list of {"name": str, "data": base64-encoded bytes}"""
+    return {"type": MsgType.CLIPBOARD_PUSH, "format": "files", "files": files}
+
+
 def make_control_grant() -> dict:
     return {"type": MsgType.CONTROL_GRANT}
 
