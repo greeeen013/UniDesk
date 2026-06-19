@@ -32,10 +32,9 @@ log = logging.getLogger(__name__)
 
 class _Signals(QObject):
     """Qt signals for cross-thread GUI updates."""
-    client_connected = pyqtSignal(str, str, object)    # client_id, hostname, monitor
-    client_disconnected = pyqtSignal(str)              # client_id
-    monitors_changed = pyqtSignal(object)              # list[MonitorRect]
-    placement_restored = pyqtSignal(str, object)       # client_id, VirtualPlacement
+    client_connected = pyqtSignal(str, str, object, object)  # client_id, hostname, monitor, placement|None
+    client_disconnected = pyqtSignal(str)                    # client_id
+    monitors_changed = pyqtSignal(object)                    # list[MonitorRect]
 
 
 class MainWindow(QMainWindow):
@@ -120,13 +119,11 @@ class MainWindow(QMainWindow):
         self._signals.client_connected.connect(self._on_client_connected_gui)
         self._signals.client_disconnected.connect(self._on_client_disconnected_gui)
         self._signals.monitors_changed.connect(self._on_monitors_changed_gui)
-        self._signals.placement_restored.connect(self._on_placement_restored_gui)
 
         # Wire server callbacks → signals (called from non-GUI threads)
         self._server.on_client_connected = self._emit_client_connected
         self._server.on_client_disconnected = self._emit_client_disconnected
         self._server.on_monitors_changed = self._emit_monitors_changed
-        self._server.on_placement_restored = self._emit_placement_restored
 
     # ------------------------------------------------------------------
     # Thread-safe emitters (called from server threads)
@@ -134,7 +131,7 @@ class MainWindow(QMainWindow):
 
     def _emit_client_connected(self, client) -> None:
         monitor = client.monitors[0] if client.monitors else None
-        self._signals.client_connected.emit(client.client_id, client.hostname, monitor)
+        self._signals.client_connected.emit(client.client_id, client.hostname, monitor, client.placement)
 
     def _emit_client_disconnected(self, client) -> None:
         self._signals.client_disconnected.emit(client.client_id)
@@ -142,17 +139,16 @@ class MainWindow(QMainWindow):
     def _emit_monitors_changed(self, monitors: list[MonitorRect]) -> None:
         self._signals.monitors_changed.emit(monitors)
 
-    def _emit_placement_restored(self, placement: VirtualPlacement) -> None:
-        self._signals.placement_restored.emit(placement.client_id, placement)
-
     # ------------------------------------------------------------------
     # GUI slots (always on main thread)
     # ------------------------------------------------------------------
 
-    def _on_client_connected_gui(self, client_id: str, hostname: str, monitor) -> None:
+    def _on_client_connected_gui(self, client_id: str, hostname: str, monitor, placement) -> None:
         self._client_list.add_client(client_id, hostname)
         if monitor:
             self._layout_widget.add_client_monitor(client_id, hostname, monitor)
+            if placement:
+                self._layout_widget.restore_client_placement(client_id, placement)
         self._status.showMessage(f"{hostname} connected")
         self._tray.set_active(True)
 
@@ -169,9 +165,6 @@ class MainWindow(QMainWindow):
         client = self._server._client_mgr.get(placement.client_id)
         if client and client.monitors:
             self._server.set_placement(placement, client.monitors[0])
-
-    def _on_placement_restored_gui(self, client_id: str, placement) -> None:
-        self._layout_widget.restore_client_placement(client_id, placement)
 
     def _on_snap_changed(self, state: int) -> None:
         self._layout_widget.set_snap_enabled(bool(state))

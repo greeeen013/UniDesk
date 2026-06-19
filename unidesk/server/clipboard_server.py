@@ -151,6 +151,7 @@ class ClipboardServer:
 
         user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEX)]
 
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
         h_inst = kernel32.GetModuleHandleW(None)
         class_name = "UniDeskClipboard"
 

@@ -27,6 +27,7 @@ from ..common import protocol as proto
 from ..common.config import MonitorRect, VirtualPlacement
 from ..common.constants import TCP_PORT, MsgType, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
 from ..common.discovery import DiscoveryServer
+from .audio_server import AudioServer
 from .client_manager import ClientManager, ConnectedClient
 from .clipboard_server import ClipboardServer
 from .edge_detector import EdgeDetector
@@ -58,6 +59,7 @@ class ServerApp:
         self._edge = EdgeDetector([], scale_to_snap=scale_to_snap)
         self._capture = InputCapture()
         self._clipboard = ClipboardServer(on_change=self._on_clipboard_change, compress_images=compress_images)
+        self._audio = AudioServer.from_control_port(port)
         self._discovery = DiscoveryServer(tcp_port=port)
         self._sel = selectors.DefaultSelector()
         self._active_client_id: Optional[str] = None
@@ -75,7 +77,6 @@ class ServerApp:
         self.on_client_connected: Optional[callable] = None
         self.on_client_disconnected: Optional[callable] = None
         self.on_monitors_changed: Optional[callable] = None
-        self.on_placement_restored: Optional[callable] = None
 
         # In-memory placement store: hostname → (anchor_monitor_id, anchor_edge, offset_pixels)
         # Persists across client reconnects for the lifetime of the server process.
@@ -92,6 +93,7 @@ class ServerApp:
         """Start all subsystems in background threads. Non-blocking."""
         # Make process DPI-aware so monitor coords are in physical pixels
         ctypes.windll.user32.SetProcessDPIAware()
+        self._setup_win32_api()
 
         self._monitors = get_monitors()
         self._edge.update_server_monitors(self._monitors)
@@ -99,6 +101,7 @@ class ServerApp:
 
         self._capture.start()
         self._clipboard.start()
+        self._audio.start()
         self._discovery.start()
 
         self._running = True
@@ -123,6 +126,7 @@ class ServerApp:
         self._running = False
         self._capture.stop()
         self._clipboard.stop()
+        self._audio.stop()
         self._discovery.stop()
 
     # ------------------------------------------------------------------
@@ -212,8 +216,6 @@ class ServerApp:
             monitors = [MonitorRect.from_dict(m) for m in msg.get("monitors", [])]
             client.monitors = monitors
             log.info("Client %s reported %d monitor(s)", client.hostname, len(monitors))
-            if self.on_client_connected:
-                self.on_client_connected(client)  # refresh GUI
             if monitors and client.hostname in self._placement_memory:
                 anchor_id, anchor_edge, offset_px = self._placement_memory[client.hostname]
                 placement = VirtualPlacement(
@@ -223,9 +225,10 @@ class ServerApp:
                     offset_pixels=offset_px,
                 )
                 self._edge.update_placement(placement, monitors[0])
+                client.placement = placement  # carried into on_client_connected for GUI
                 log.info("Restored placement for %s (%s edge, anchor %d)", client.hostname, anchor_edge, anchor_id)
-                if self.on_placement_restored:
-                    self.on_placement_restored(placement)
+            if self.on_client_connected:
+                self.on_client_connected(client)  # refresh GUI (placement already set)
 
         elif t == MsgType.PONG:
             client.last_pong = time.time()
@@ -405,6 +408,13 @@ class ServerApp:
         client = self._client_mgr.get(client_id)
         if client:
             client.send(proto.make_control_grant())
+        # Prevent server display/sleep while input is forwarded to client.
+        # Without ES_CONTINUOUS the call simply resets the idle timer once;
+        # _heartbeat_loop renews it every HEARTBEAT_INTERVAL while forwarding,
+        # so no per-thread state to clear when _release_control is called.
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            0x00000001 | 0x00000002  # ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+        )
         log.info("Control granted to %s", client_id)
 
         # The cursor is hidden via SetSystemCursor (see show_cursor).
@@ -435,6 +445,18 @@ class ServerApp:
         log.info("Control returned to server")
 
     # ------------------------------------------------------------------
+    # Win32 API setup
+    # ------------------------------------------------------------------
+
+    def _setup_win32_api(self) -> None:
+        """Set argtypes/restype for Win32 functions used in hot paths. Called once at start."""
+        u32 = ctypes.windll.user32
+        u32.GetForegroundWindow.restype    = ctypes.c_void_p
+        u32.MonitorFromWindow.restype      = ctypes.c_void_p
+        u32.GetClassNameW.argtypes         = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        u32.GetClassNameW.restype          = ctypes.c_int
+
+    # ------------------------------------------------------------------
     # Fullscreen detection
     # ------------------------------------------------------------------
 
@@ -452,16 +474,29 @@ class ServerApp:
         self._fullscreen_cache = (now, result)
         return result
 
+    # Shell/desktop/taskbar window classes — always cover the full screen by definition,
+    # so they must be excluded to avoid false-positive fullscreen detection when the
+    # desktop briefly becomes the foreground window (e.g. right after waking from sleep).
+    _SHELL_WINDOW_CLASSES = frozenset({
+        "Progman",                    # Program Manager / desktop background
+        "WorkerW",                    # Desktop wallpaper renderer
+        "Shell_TrayWnd",              # Primary taskbar
+        "Shell_SecondaryTrayWnd",     # Taskbar on secondary monitors
+        "DWMInputSink",               # DWM compositor helper
+    })
+
     def _check_fullscreen_win32(self) -> bool:
         try:
             user32 = ctypes.windll.user32
-            # HWND and HMONITOR are pointer-sized; default restype (c_int) truncates on 64-bit.
-            user32.GetForegroundWindow.restype = ctypes.c_void_p
-            user32.MonitorFromWindow.restype   = ctypes.c_void_p
-            user32.GetMonitorInfoW.argtypes    = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
-
             hwnd = user32.GetForegroundWindow()
             if not hwnd:
+                return False
+
+            # Skip shell/desktop windows — they always cover the full monitor by
+            # definition and would produce a permanent false positive.
+            class_buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_buf, 256)
+            if class_buf.value in self._SHELL_WINDOW_CLASSES:
                 return False
 
             win_rect = ctypes.wintypes.RECT()
@@ -519,6 +554,12 @@ class ServerApp:
     def _heartbeat_loop(self) -> None:
         while self._running:
             time.sleep(HEARTBEAT_INTERVAL)
+            # Keep display + system awake while forwarding (renewed each beat;
+            # stops automatically when _active_client_id is cleared).
+            if self._active_client_id:
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    0x00000001 | 0x00000002  # ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                )
             now = time.time()
             for client in self._client_mgr.all_clients():
                 if now - client.last_pong > HEARTBEAT_TIMEOUT:

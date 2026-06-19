@@ -11,8 +11,11 @@ Admin rights: NOT required for basic use.
 """
 
 import argparse
+import faulthandler
 import logging
 import sys
+
+faulthandler.enable()
 
 logging.basicConfig(
     level=logging.INFO,

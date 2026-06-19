@@ -16,6 +16,7 @@ from ..common import protocol as proto
 from ..common.config import MonitorRect
 from ..common.constants import TCP_PORT, MsgType, HEARTBEAT_INTERVAL
 from ..common.discovery import discover_server
+from .audio_client import AudioClient
 from .clipboard_client import ClipboardClient
 from .cursor_manager import CursorManager
 from .input_simulator import MouseSimulator, KeyboardSimulator
@@ -35,6 +36,7 @@ class ClientApp:
         self._keyboard = KeyboardSimulator()
         self._cursor = CursorManager(on_grab_request=self._on_local_grab, hide_mouse=hide_mouse)
         self._clipboard = ClipboardClient(on_change=self._on_local_clipboard, compress_images=compress_images)
+        self._audio: Optional[AudioClient] = None
         self.client_id: Optional[str] = None
         self.connected_host: Optional[str] = None  # set after successful connection
         self.server_monitors: list[MonitorRect] = []
@@ -53,6 +55,8 @@ class ClientApp:
     def stop(self) -> None:
         self._running = False
         self._clipboard.stop()
+        if self._audio:
+            self._audio.stop()
         self._send_queue.put(None)  # unblock writer
         if self._sock:
             try:
@@ -106,6 +110,14 @@ class ClientApp:
         my_monitors = get_monitors()
         proto.send_message(sock, proto.make_monitor_info([m.to_dict() for m in my_monitors]))
 
+        # Start audio stream after handshake (client_id now known)
+        self._audio = AudioClient.from_control_port(
+            host=host,
+            control_port=port,
+            client_id=self.client_id,
+        )
+        self._audio.start()
+
         if self.on_connected:
             self.on_connected()
 
@@ -130,6 +142,9 @@ class ClientApp:
                 break
         log.info("Disconnected from server")
         self._cursor.release_control()
+        if self._audio:
+            self._audio.stop()
+            self._audio = None
         if self.on_disconnected:
             self.on_disconnected()
 

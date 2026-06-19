@@ -50,6 +50,14 @@ class ConnectedClient:
                 continue
             except OSError as exc:
                 log.warning("Writer error for %s: %s", self.client_id, exc)
+                # Shut down the socket so the network-loop selector wakes up,
+                # reads EOF/error, and calls _disconnect_client from the correct
+                # thread. Without this, a silent write failure leaves
+                # is_forwarding=True permanently — both PCs appear frozen.
+                try:
+                    self.conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
                 break
 
     def send(self, msg: dict) -> None:

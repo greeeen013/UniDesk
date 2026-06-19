@@ -5,9 +5,14 @@ APP_VERSION = "0.1.0"
 
 # Network
 TCP_PORT = 25432
-UDP_DISCOVERY_PORT = 25433
+UDP_DISCOVERY_PORT = 25433  # UDP — no conflict with TCP audio port
+AUDIO_PORT_OFFSET = 2       # audio TCP = main_port + 2 (= 25434 by default)
 HEARTBEAT_INTERVAL = 5.0   # seconds between PINGs
 HEARTBEAT_TIMEOUT = 10.0   # drop client if no PONG within this time
+
+# Audio streaming (client → server)
+AUDIO_CHUNK = 1024          # frames per buffer (~21 ms at 48 kHz)
+AUDIO_JITTER_BUFFER = 8     # max queued chunks before dropping (~170 ms headroom)
 
 # Message types
 class MsgType:
