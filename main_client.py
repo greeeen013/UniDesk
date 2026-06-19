@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--admin", action="store_true", help="Request administrator privileges to bypass UIPI (e.g., clicking on Taskbar)")
     parser.add_argument("--hide-mouse", default=True, action=argparse.BooleanOptionalAction, help="Teleport mouse to bottom-right corner when inactive (default: on)")
     parser.add_argument("--compress-images", action="store_true", help="Compress image clipboard with PNG before sending (requires Pillow)")
+    parser.add_argument("--mute-local", default=True, action=argparse.BooleanOptionalAction, help="Mute this PC's audio output while streaming to server (default: on)")
     args = parser.parse_args()
 
     import ctypes
@@ -50,7 +51,7 @@ def main():
 
     from unidesk.client.client_app import ClientApp
 
-    client = ClientApp(server_host=args.server, port=args.port, hide_mouse=args.hide_mouse, compress_images=args.compress_images)
+    client = ClientApp(server_host=args.server, port=args.port, hide_mouse=args.hide_mouse, compress_images=args.compress_images, mute_local=args.mute_local)
 
     # Minimal tray icon for client
     pix = QPixmap(16, 16)

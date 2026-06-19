@@ -26,9 +26,10 @@ log = logging.getLogger(__name__)
 
 
 class ClientApp:
-    def __init__(self, server_host: Optional[str], port: int = TCP_PORT, hide_mouse: bool = False, compress_images: bool = False) -> None:
+    def __init__(self, server_host: Optional[str], port: int = TCP_PORT, hide_mouse: bool = False, compress_images: bool = False, mute_local: bool = True) -> None:
         self.server_host = server_host  # None = auto-discover
         self.port = port
+        self._mute_local = mute_local
         self._sock: Optional[socket.socket] = None
         self._running = False
         self._send_queue: queue.Queue = queue.Queue()
@@ -115,6 +116,7 @@ class ClientApp:
             host=host,
             control_port=port,
             client_id=self.client_id,
+            mute_local=self._mute_local,
         )
         self._audio.start()
 

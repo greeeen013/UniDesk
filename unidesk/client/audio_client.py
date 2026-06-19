@@ -5,14 +5,7 @@ and streams it over a dedicated TCP connection to the server (PC1).
 No admin rights needed: WASAPI loopback is a standard Windows API feature
 that any user-level process can open.  No virtual audio driver required.
 
-Requires: pip install PyAudioWPatch
-(PyAudioWPatch is a drop-in pyaudio replacement that exposes WASAPI loopback)
-
-UX note: loopback captures what the default output device *renders*, which
-means PC2's speakers will still play audio unless you set PC2's default
-output to a device with no physical speakers (e.g. "Digital Output (S/PDIF)"
-or a dummy USB dongle).  Muting/lowering PC2 volume does NOT silence the
-loopback — Windows applies volume after capture in shared mode.
+Requires: pip install PyAudioWPatch pycaw
 """
 
 from __future__ import annotations
@@ -31,28 +24,82 @@ log = logging.getLogger(__name__)
 
 try:
     import pyaudiowpatch as pyaudio
-    _AVAILABLE = True
+    _AUDIO_AVAILABLE = True
 except ImportError:
     pyaudio = None  # type: ignore[assignment]
-    _AVAILABLE = False
+    _AUDIO_AVAILABLE = False
+
+try:
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    from comtypes import CLSCTX_ALL as _CLSCTX_ALL
+    _MUTE_AVAILABLE = True
+except ImportError:
+    _MUTE_AVAILABLE = False
+
+
+class _OutputMuter:
+    """Saves and restores the mute state of PC2's default audio output."""
+
+    def __init__(self) -> None:
+        self._vol = None
+        self._was_muted: bool = False
+
+    def mute(self) -> None:
+        if not _MUTE_AVAILABLE:
+            log.warning("pycaw not installed — local mute skipped. Run: pip install pycaw")
+            return
+        try:
+            dev = AudioUtilities.GetSpeakers()
+            iface = dev.Activate(IAudioEndpointVolume._iid_, _CLSCTX_ALL, None)
+            self._vol = iface.QueryInterface(IAudioEndpointVolume)
+            self._was_muted = bool(self._vol.GetMute())
+            if not self._was_muted:
+                self._vol.SetMute(1, None)
+                log.info("Local audio output muted")
+        except Exception as exc:
+            log.warning("Could not mute local output: %s", exc)
+            self._vol = None
+
+    def restore(self) -> None:
+        if self._vol is None:
+            return
+        try:
+            if not self._was_muted:
+                self._vol.SetMute(0, None)
+                log.info("Local audio output unmuted")
+        except Exception as exc:
+            log.warning("Could not restore local mute state: %s", exc)
+        self._vol = None
 
 
 class AudioClient:
     """Captures system audio output on PC2 and streams PCM to PC1."""
 
-    def __init__(self, host: str, port: int, client_id: str) -> None:
+    def __init__(self, host: str, port: int, client_id: str, mute_local: bool = True) -> None:
         self._host = host
         self._port = port
         self._client_id = client_id
+        self._mute_local = mute_local
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
     @classmethod
-    def from_control_port(cls, host: str, control_port: int, client_id: str) -> "AudioClient":
-        return cls(host=host, port=control_port + AUDIO_PORT_OFFSET, client_id=client_id)
+    def from_control_port(
+        cls,
+        host: str,
+        control_port: int,
+        client_id: str,
+        mute_local: bool = True,
+    ) -> "AudioClient":
+        return cls(
+            host=host,
+            port=control_port + AUDIO_PORT_OFFSET,
+            client_id=client_id,
+            mute_local=mute_local,
+        )
 
     def start(self) -> None:
-        if not _AVAILABLE:
+        if not _AUDIO_AVAILABLE:
             log.warning(
                 "PyAudioWPatch not installed — audio streaming disabled. "
                 "Run: pip install PyAudioWPatch"
@@ -79,6 +126,7 @@ class AudioClient:
                     time.sleep(3)
 
     def _session(self) -> None:
+        muter = _OutputMuter() if self._mute_local else None
         p = pyaudio.PyAudio()
         stream = None
         sock = None
@@ -120,6 +168,9 @@ class AudioClient:
 
             log.info("Audio stream connected to %s:%d", self._host, self._port)
 
+            if muter:
+                muter.mute()
+
             while self._running:
                 data = stream.read(AUDIO_CHUNK, exception_on_overflow=False)
                 if data:
@@ -129,6 +180,8 @@ class AudioClient:
             if self._running:
                 log.debug("Audio socket closed: %s", exc)
         finally:
+            if muter:
+                muter.restore()
             if stream is not None:
                 try:
                     stream.stop_stream()
@@ -157,7 +210,7 @@ class AudioClient:
             if default_name in loopback["name"]:
                 return loopback
 
-        # Fallback: return first available loopback
+        # Fallback: first available loopback
         for loopback in p.get_loopback_device_info_generator():
             return loopback
 

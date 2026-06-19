@@ -2,3 +2,4 @@ PyQt6>=6.5.0
 pywin32>=306
 pyinstaller>=6.0
 PyAudioWPatch>=0.2.12
+pycaw>=0.3.0
