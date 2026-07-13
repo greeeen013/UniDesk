@@ -14,6 +14,11 @@ HEARTBEAT_TIMEOUT = 10.0   # drop client if no PONG within this time
 AUDIO_CHUNK = 1024          # frames per buffer (~21 ms at 48 kHz)
 AUDIO_JITTER_BUFFER = 8     # max queued chunks before dropping (~170 ms headroom)
 
+# Screen view streaming (client → server), on-demand per view window
+SCREEN_PORT_OFFSET = 3      # screen TCP = main_port + 3 (= 25435 by default)
+SCREEN_CAPTURE_FPS = 12
+SCREEN_JPEG_QUALITY = 55
+
 # Message types
 class MsgType:
     HANDSHAKE_REQ = "HANDSHAKE_REQ"
@@ -30,6 +35,10 @@ class MsgType:
     PING = "PING"
     PONG = "PONG"
     ERROR = "ERROR"
+    AUDIO_ENABLE = "AUDIO_ENABLE"
+    AUDIO_DISABLE = "AUDIO_DISABLE"
+    SCREEN_VIEW_START = "SCREEN_VIEW_START"
+    SCREEN_VIEW_STOP = "SCREEN_VIEW_STOP"
 
 # Edge detector
 EDGE_SNAP_TOLERANCE = 10   # pixels — snap distance in GUI

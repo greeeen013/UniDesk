@@ -25,6 +25,7 @@ from ..common.config import MonitorRect, VirtualPlacement
 from ..common.constants import TCP_PORT
 from .client_list import ClientListWidget
 from .monitor_layout import MonitorLayoutWidget
+from .screen_view_window import ScreenViewWindow
 from .tray_icon import TrayIcon
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ class MainWindow(QMainWindow):
         self._server = server_app
         self._signals = _Signals()
         self._last_active_id: str | None = None
+        self._screen_windows: dict[tuple[str, int], ScreenViewWindow] = {}
+        self._screen_sessions: dict[tuple[str, int], str] = {}  # (client_id, monitor_index) -> session_id
         self._setup_ui()
         self._connect_signals()
         self._setup_tray()
@@ -68,7 +71,9 @@ class MainWindow(QMainWindow):
 
         # Tab 1: Connected clients
         self._client_list = ClientListWidget(
-            on_disconnect=self._on_disconnect_client
+            on_disconnect=self._on_disconnect_client,
+            get_monitor_count=lambda cid: len(self._server.get_client_monitors(cid)),
+            on_view_screen=self._on_view_screen,
         )
         tabs.addTab(self._client_list, "Clients")
 
@@ -94,6 +99,11 @@ class MainWindow(QMainWindow):
         self._clipboard_check = QCheckBox("Enable clipboard sync")
         self._clipboard_check.setChecked(True)
         form.addRow("Clipboard:", self._clipboard_check)
+
+        self._audio_check = QCheckBox("Enable audio streaming (while viewing a client's screen)")
+        self._audio_check.setChecked(True)
+        self._audio_check.stateChanged.connect(self._on_audio_changed)
+        form.addRow("Audio:", self._audio_check)
 
         self._snap_check = QCheckBox("Auto-snap client monitor to server edge on drop")
         self._snap_check.setChecked(True)
@@ -156,6 +166,8 @@ class MainWindow(QMainWindow):
         self._client_list.remove_client(client_id)
         self._layout_widget.remove_client_monitor(client_id)
         self._status.showMessage("Client disconnected")
+        for key in [k for k in self._screen_windows if k[0] == client_id]:
+            self._screen_windows[key].close()
 
     def _on_monitors_changed_gui(self, monitors: list[MonitorRect]) -> None:
         self._layout_widget.set_server_monitors(monitors)
@@ -166,6 +178,9 @@ class MainWindow(QMainWindow):
         if client and client.monitors:
             self._server.set_placement(placement, client.monitors[0])
 
+    def _on_audio_changed(self, state: int) -> None:
+        self._server.set_audio_enabled(bool(state))
+
     def _on_snap_changed(self, state: int) -> None:
         self._layout_widget.set_snap_enabled(bool(state))
 
@@ -173,6 +188,43 @@ class MainWindow(QMainWindow):
         client = self._server._client_mgr.get(client_id)
         if client:
             self._server._disconnect_client(client)
+
+    def _on_view_screen(self, client_id: str, monitor_index: int) -> None:
+        key = (client_id, monitor_index)
+        existing = self._screen_windows.get(key)
+        if existing:
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        client = self._server._client_mgr.get(client_id)
+        monitors = self._server.get_client_monitors(client_id)
+        if not client or not (0 <= monitor_index < len(monitors)):
+            return
+        monitor = monitors[monitor_index]
+
+        session_id = self._server.start_screen_view(client_id, monitor_index)
+        if not session_id:
+            return
+
+        window = ScreenViewWindow(
+            hostname=client.hostname,
+            monitor_label=f"Monitor {monitor_index + 1}",
+            monitor_width=monitor.width,
+            monitor_height=monitor.height,
+            on_close=lambda: self._on_screen_window_closed(client_id, monitor_index),
+        )
+        self._screen_windows[key] = window
+        self._screen_sessions[key] = session_id
+        self._server.register_screen_frame_callback(session_id, window.push_frame_threadsafe)
+        window.show()
+
+    def _on_screen_window_closed(self, client_id: str, monitor_index: int) -> None:
+        key = (client_id, monitor_index)
+        self._screen_windows.pop(key, None)
+        session_id = self._screen_sessions.pop(key, None)
+        if session_id:
+            self._server.stop_screen_view(client_id, session_id)
 
     # ------------------------------------------------------------------
     # Misc

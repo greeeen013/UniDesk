@@ -78,12 +78,13 @@ def make_handshake_req(hostname: str) -> dict:
     return {"type": MsgType.HANDSHAKE_REQ, "version": APP_VERSION, "hostname": hostname}
 
 
-def make_handshake_ack(client_id: str, server_monitors: list[dict]) -> dict:
+def make_handshake_ack(client_id: str, server_monitors: list[dict], audio_enabled: bool = True) -> dict:
     return {
         "type": MsgType.HANDSHAKE_ACK,
         "version": APP_VERSION,
         "client_id": client_id,
         "server_monitors": server_monitors,
+        "audio_enabled": audio_enabled,
     }
 
 
@@ -146,6 +147,22 @@ def make_ping() -> dict:
 
 def make_pong(ping_ts: float) -> dict:
     return {"type": MsgType.PONG, "ts": time.time(), "ping_ts": ping_ts}
+
+
+def make_audio_enable() -> dict:
+    return {"type": MsgType.AUDIO_ENABLE}
+
+
+def make_audio_disable() -> dict:
+    return {"type": MsgType.AUDIO_DISABLE}
+
+
+def make_screen_view_start(session_id: str, monitor_index: int) -> dict:
+    return {"type": MsgType.SCREEN_VIEW_START, "session_id": session_id, "monitor_index": monitor_index}
+
+
+def make_screen_view_stop(session_id: str) -> dict:
+    return {"type": MsgType.SCREEN_VIEW_STOP, "session_id": session_id}
 
 
 def make_error(message: str) -> dict:

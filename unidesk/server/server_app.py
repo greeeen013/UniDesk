@@ -21,6 +21,7 @@ import selectors
 import socket
 import threading
 import time
+import uuid
 from typing import Optional
 
 from ..common import protocol as proto
@@ -33,6 +34,7 @@ from .clipboard_server import ClipboardServer
 from .edge_detector import EdgeDetector
 from .input_capture import InputCapture
 from .monitor_info import get_monitors, get_virtual_desktop_rect
+from .screen_view_server import ScreenViewServer, FrameCallback
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +62,9 @@ class ServerApp:
         self._capture = InputCapture()
         self._clipboard = ClipboardServer(on_change=self._on_clipboard_change, compress_images=compress_images)
         self._audio = AudioServer.from_control_port(port)
+        self._audio_enabled: bool = True
+        self._screen = ScreenViewServer.from_control_port(port)
+        self._view_sessions: dict[str, set[str]] = {}   # client_id -> active session_ids
         self._discovery = DiscoveryServer(tcp_port=port)
         self._sel = selectors.DefaultSelector()
         self._active_client_id: Optional[str] = None
@@ -102,6 +107,7 @@ class ServerApp:
         self._capture.start()
         self._clipboard.start()
         self._audio.start()
+        self._screen.start()
         self._discovery.start()
 
         self._running = True
@@ -127,6 +133,7 @@ class ServerApp:
         self._capture.stop()
         self._clipboard.stop()
         self._audio.stop()
+        self._screen.stop()
         self._discovery.stop()
 
     # ------------------------------------------------------------------
@@ -171,6 +178,7 @@ class ServerApp:
             proto.send_message(conn, proto.make_handshake_ack(
                 client_id=client.client_id,
                 server_monitors=[m.to_dict() for m in self._monitors],
+                audio_enabled=self._audio_enabled,
             ))
             conn.settimeout(None)
             conn.setblocking(False)
@@ -201,6 +209,8 @@ class ServerApp:
         if self._active_client_id == client.client_id:
             self._release_control()
         self._edge.remove_client(client.client_id)
+        for session_id in self._view_sessions.pop(client.client_id, ()):
+            self._screen.unregister(session_id)
         self._client_mgr.remove(client.client_id)
         if self.on_client_disconnected:
             self.on_client_disconnected(client)
@@ -546,6 +556,66 @@ class ServerApp:
 
     def get_clients(self) -> list:
         return self._client_mgr.all_clients()
+
+    def set_audio_enabled(self, enabled: bool) -> None:
+        """Master gate for audio. Audio only ever streams from a client while at
+        least one screen-view session is open for it; this flag just allows or
+        blocks that per-client streaming — it does not touch the always-on
+        AudioServer listener.
+        """
+        if self._audio_enabled == enabled:
+            return
+        self._audio_enabled = enabled
+        for client_id in self._view_sessions:
+            client = self._client_mgr.get(client_id)
+            if not client:
+                continue
+            client.send(proto.make_audio_enable() if enabled else proto.make_audio_disable())
+        log.info("Audio streaming %s", "enabled" if enabled else "disabled")
+
+    # ------------------------------------------------------------------
+    # Screen view API (called by GUI)
+    # ------------------------------------------------------------------
+
+    def get_client_monitors(self, client_id: str) -> list[MonitorRect]:
+        client = self._client_mgr.get(client_id)
+        return client.monitors if client else []
+
+    def start_screen_view(self, client_id: str, monitor_index: int) -> Optional[str]:
+        client = self._client_mgr.get(client_id)
+        if not client:
+            return None
+        session_id = uuid.uuid4().hex
+        was_empty = not self._view_sessions.get(client_id)
+        self._view_sessions.setdefault(client_id, set()).add(session_id)
+        client.send(proto.make_screen_view_start(session_id, monitor_index))
+        if was_empty and self._audio_enabled:
+            client.send(proto.make_audio_enable())
+        log.info("Screen view started for %s: session=%s monitor=%d", client.hostname, session_id, monitor_index)
+        return session_id
+
+    def stop_screen_view(self, client_id: str, session_id: str) -> None:
+        self._screen.unregister(session_id)
+        sessions = self._view_sessions.get(client_id)
+        if sessions:
+            sessions.discard(session_id)
+            now_empty = not sessions
+            if now_empty:
+                del self._view_sessions[client_id]
+        else:
+            now_empty = True
+        client = self._client_mgr.get(client_id)
+        if client:
+            client.send(proto.make_screen_view_stop(session_id))
+            if now_empty:
+                client.send(proto.make_audio_disable())
+        log.info("Screen view stopped: session=%s", session_id)
+
+    def register_screen_frame_callback(self, session_id: str, callback: FrameCallback) -> None:
+        self._screen.register(session_id, callback)
+
+    def unregister_screen_frame_callback(self, session_id: str) -> None:
+        self._screen.unregister(session_id)
 
     # ------------------------------------------------------------------
     # Heartbeat
