@@ -8,6 +8,7 @@ import ctypes
 import logging
 import queue
 import socket
+import subprocess
 import threading
 import time
 from typing import Optional
@@ -253,11 +254,26 @@ class ClientApp:
                 session.stop()
                 log.info("Screen view stopped: session=%s", session_id)
 
+        elif t == MsgType.POWER_ACTION:
+            self._handle_power_action(msg.get("action"))
+
         elif t == MsgType.PING:
             self._send(proto.make_pong(msg.get("ts", 0)))
 
         elif t == MsgType.PONG:
             pass  # heartbeat ack
+
+    def _handle_power_action(self, action: Optional[str]) -> None:
+        """Server requested logoff/restart/shutdown of this machine."""
+        log.warning("Power action requested by server: %s", action)
+        if action == "logoff":
+            subprocess.run(["shutdown", "/l"], check=False)
+        elif action == "restart":
+            subprocess.run(["shutdown", "/r", "/t", "0"], check=False)
+        elif action == "shutdown":
+            subprocess.run(["shutdown", "/s", "/t", "0"], check=False)
+        else:
+            log.warning("Unknown power action: %s", action)
 
     # ------------------------------------------------------------------
     # Callbacks

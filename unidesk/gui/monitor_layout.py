@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import QColor, QBrush, QPen, QFont
 from PyQt6.QtWidgets import (
     QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsTextItem, QGraphicsItem,
+    QGraphicsTextItem, QGraphicsItem, QMenu,
 )
 
 from ..common.config import MonitorRect, VirtualPlacement
@@ -72,6 +72,9 @@ class ClientMonitorItem(QGraphicsRectItem):
         on_placed: Callable[[VirtualPlacement], None],
         on_snap_preview: Optional[Callable] = None,
         get_snap_enabled: Optional[Callable[[], bool]] = None,
+        get_monitor_count: Optional[Callable[[str], int]] = None,
+        on_view_screen: Optional[Callable[[str, int], None]] = None,
+        on_power_action: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.client_id = client_id
         self.hostname = hostname
@@ -81,6 +84,9 @@ class ClientMonitorItem(QGraphicsRectItem):
         self._on_placed = on_placed
         self._on_snap_preview = on_snap_preview
         self._get_snap_enabled = get_snap_enabled or (lambda: True)
+        self._get_monitor_count = get_monitor_count
+        self._on_view_screen = on_view_screen
+        self._on_power_action = on_power_action
 
         r = QRectF(0, 0, monitor.width / GUI_SCALE, monitor.height / GUI_SCALE)
         super().__init__(r)
@@ -110,6 +116,33 @@ class ClientMonitorItem(QGraphicsRectItem):
         else:
             self.setBrush(QBrush(self._color))
             self.setPen(QPen(self._color.darker(130), 2))
+
+    def contextMenuEvent(self, event) -> None:
+        menu = QMenu()
+        has_items = False
+
+        if self._on_view_screen and self._get_monitor_count:
+            count = self._get_monitor_count(self.client_id)
+            for i in range(count):
+                action = menu.addAction(f"View Monitor {i + 1}")
+                action.triggered.connect(lambda checked=False, idx=i: self._on_view_screen(self.client_id, idx))
+                has_items = True
+
+        if self._on_power_action:
+            if has_items:
+                menu.addSeparator()
+            logoff = menu.addAction("Log Off")
+            logoff.triggered.connect(lambda: self._on_power_action(self.client_id, "logoff"))
+            restart = menu.addAction("Restart")
+            restart.triggered.connect(lambda: self._on_power_action(self.client_id, "restart"))
+            shutdown = menu.addAction("Shut Down")
+            shutdown.triggered.connect(lambda: self._on_power_action(self.client_id, "shutdown"))
+            has_items = True
+
+        if not has_items:
+            return
+        menu.exec(event.screenPos())
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:
         super().mouseMoveEvent(event)
@@ -199,10 +232,19 @@ class MonitorLayoutWidget(QGraphicsView):
     Signature: (placement: VirtualPlacement) -> None
     """
 
-    def __init__(self, on_placement_changed: Callable[[VirtualPlacement], None]) -> None:
+    def __init__(
+        self,
+        on_placement_changed: Callable[[VirtualPlacement], None],
+        get_monitor_count: Optional[Callable[[str], int]] = None,
+        on_view_screen: Optional[Callable[[str, int], None]] = None,
+        on_power_action: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
         self._scene = QGraphicsScene()
         super().__init__(self._scene)
         self._on_placement_changed = on_placement_changed
+        self._get_monitor_count = get_monitor_count
+        self._on_view_screen = on_view_screen
+        self._on_power_action = on_power_action
         self._server_items: list[ServerMonitorItem] = []
         self._client_items: dict[str, ClientMonitorItem] = {}
         self._color_idx = 0
@@ -266,6 +308,9 @@ class MonitorLayoutWidget(QGraphicsView):
             on_placed=self._on_placement_changed,
             on_snap_preview=self._update_snap_preview,
             get_snap_enabled=lambda: self._snap_enabled,
+            get_monitor_count=self._get_monitor_count,
+            on_view_screen=self._on_view_screen,
+            on_power_action=self._on_power_action,
         )
         # Default position: to the right of the rightmost server monitor
         if self._server_items:

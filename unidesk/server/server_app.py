@@ -618,6 +618,19 @@ class ServerApp:
         self._screen.unregister(session_id)
 
     # ------------------------------------------------------------------
+    # Power actions (called by GUI)
+    # ------------------------------------------------------------------
+
+    def send_power_action(self, client_id: str, action: str) -> bool:
+        """action: 'logoff'|'restart'|'shutdown'"""
+        client = self._client_mgr.get(client_id)
+        if not client:
+            return False
+        client.send(proto.make_power_action(action))
+        log.info("Power action '%s' sent to %s", action, client.hostname)
+        return True
+
+    # ------------------------------------------------------------------
     # Heartbeat
     # ------------------------------------------------------------------
 

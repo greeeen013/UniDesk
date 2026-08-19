@@ -1,8 +1,9 @@
 """
 Screen view window — shows a live JPEG stream from a client's monitor.
 
-The window is freely resizable; the image is letterboxed (scaled with
-Qt.AspectRatioMode.KeepAspectRatio) so it never stretches out of proportion.
+The window is resizable, but each resize is snapped back to the source
+monitor's aspect ratio (whichever dimension the user is actively dragging
+wins), so the video always fills the window exactly — no black bars.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ class ScreenViewWindow(QDialog):
         super().__init__()
         self._on_close = on_close
         self._orig_pixmap: Optional[QPixmap] = None
+        self._aspect = monitor_width / monitor_height if monitor_height else 16 / 9
+        self._enforcing_resize = False
 
         self.setWindowTitle(f"{hostname} — {monitor_label}")
         self.setSizeGripEnabled(True)
@@ -45,9 +48,8 @@ class ScreenViewWindow(QDialog):
 
         self.frame_ready.connect(self._on_frame)
 
-        aspect = monitor_width / monitor_height if monitor_height else 16 / 9
         init_w = min(monitor_width, _INIT_MAX_WIDTH) or _INIT_MAX_WIDTH
-        init_h = max(1, int(init_w / aspect))
+        init_h = max(1, round(init_w / self._aspect))
         self.resize(init_w, init_h)
 
     # ------------------------------------------------------------------
@@ -64,19 +66,43 @@ class ScreenViewWindow(QDialog):
             self._rescale()
 
     # ------------------------------------------------------------------
-    # Aspect-ratio-preserving scaling
+    # Aspect-ratio-locked resizing (no letterboxing)
     # ------------------------------------------------------------------
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if not self._enforcing_resize:
+            self._enforce_aspect(event.size(), event.oldSize())
         self._rescale()
+
+    def _enforce_aspect(self, new_size, old_size) -> None:
+        if old_size.width() <= 0 or old_size.height() <= 0:
+            return  # first resize (window creation) — already sized correctly
+        # Whichever dimension changed the most is the one the user is dragging;
+        # derive the other dimension from it so the window snaps back onto
+        # the source aspect ratio instead of drifting into letterbox territory.
+        dw = abs(new_size.width() - old_size.width())
+        dh = abs(new_size.height() - old_size.height())
+        if dw >= dh:
+            target_w = new_size.width()
+            target_h = max(1, round(target_w / self._aspect))
+        else:
+            target_h = new_size.height()
+            target_w = max(1, round(target_h * self._aspect))
+        if target_w != new_size.width() or target_h != new_size.height():
+            self._enforcing_resize = True
+            self.resize(target_w, target_h)
+            self._enforcing_resize = False
 
     def _rescale(self) -> None:
         if self._orig_pixmap is None:
             return
+        # Window is kept locked to the source aspect ratio, so filling the
+        # label exactly (no KeepAspectRatio) never visibly distorts the image
+        # and avoids the 1px rounding slivers KeepAspectRatio would leave.
         scaled = self._orig_pixmap.scaled(
             self._label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self._label.setPixmap(scaled)

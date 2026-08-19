@@ -39,6 +39,7 @@ class MsgType:
     AUDIO_DISABLE = "AUDIO_DISABLE"
     SCREEN_VIEW_START = "SCREEN_VIEW_START"
     SCREEN_VIEW_STOP = "SCREEN_VIEW_STOP"
+    POWER_ACTION = "POWER_ACTION"
 
 # Edge detector
 EDGE_SNAP_TOLERANCE = 10   # pixels — snap distance in GUI

@@ -165,5 +165,10 @@ def make_screen_view_stop(session_id: str) -> dict:
     return {"type": MsgType.SCREEN_VIEW_STOP, "session_id": session_id}
 
 
+def make_power_action(action: str) -> dict:
+    """action: 'logoff'|'restart'|'shutdown'"""
+    return {"type": MsgType.POWER_ACTION, "action": action}
+
+
 def make_error(message: str) -> dict:
     return {"type": MsgType.ERROR, "message": message}

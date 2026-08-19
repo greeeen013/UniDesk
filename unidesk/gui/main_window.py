@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QCheckBox, QSpinBox, QFormLayout, QStatusBar,
-    QApplication,
+    QApplication, QMessageBox,
 )
 
 from ..common.config import MonitorRect, VirtualPlacement
@@ -65,7 +65,10 @@ class MainWindow(QMainWindow):
 
         # Tab 0: Monitor layout
         self._layout_widget = MonitorLayoutWidget(
-            on_placement_changed=self._on_placement_changed
+            on_placement_changed=self._on_placement_changed,
+            get_monitor_count=lambda cid: len(self._server.get_client_monitors(cid)),
+            on_view_screen=self._on_view_screen,
+            on_power_action=self._on_power_action,
         )
         tabs.addTab(self._layout_widget, "Monitor Layout")
 
@@ -74,6 +77,7 @@ class MainWindow(QMainWindow):
             on_disconnect=self._on_disconnect_client,
             get_monitor_count=lambda cid: len(self._server.get_client_monitors(cid)),
             on_view_screen=self._on_view_screen,
+            on_power_action=self._on_power_action,
         )
         tabs.addTab(self._client_list, "Clients")
 
@@ -218,6 +222,23 @@ class MainWindow(QMainWindow):
         self._screen_sessions[key] = session_id
         self._server.register_screen_frame_callback(session_id, window.push_frame_threadsafe)
         window.show()
+
+    def _on_power_action(self, client_id: str, action: str) -> None:
+        client = self._server._client_mgr.get(client_id)
+        if not client:
+            return
+        labels = {"logoff": "log off", "restart": "restart", "shutdown": "shut down"}
+        label = labels.get(action, action)
+        reply = QMessageBox.question(
+            self,
+            "Confirm",
+            f"Are you sure you want to {label} '{client.hostname}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._server.send_power_action(client_id, action)
 
     def _on_screen_window_closed(self, client_id: str, monitor_index: int) -> None:
         key = (client_id, monitor_index)

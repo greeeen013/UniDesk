@@ -19,11 +19,13 @@ class ClientRow(QFrame):
         on_disconnect: Callable[[str], None],
         get_monitor_count: Optional[Callable[[str], int]] = None,
         on_view_screen: Optional[Callable[[str, int], None]] = None,
+        on_power_action: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         super().__init__()
         self.client_id = client_id
         self._get_monitor_count = get_monitor_count
         self._on_view_screen = on_view_screen
+        self._on_power_action = on_power_action
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
@@ -47,15 +49,29 @@ class ClientRow(QFrame):
         self._status_label.setStyleSheet(f"color: {color};")
 
     def _show_context_menu(self, pos) -> None:
-        if not self._on_view_screen:
-            return
-        count = self._get_monitor_count(self.client_id) if self._get_monitor_count else 0
-        if count <= 0:
-            return
         menu = QMenu(self)
-        for i in range(count):
-            action = menu.addAction(f"View Monitor {i + 1}")
-            action.triggered.connect(lambda checked=False, idx=i: self._on_view_screen(self.client_id, idx))
+        has_items = False
+
+        if self._on_view_screen:
+            count = self._get_monitor_count(self.client_id) if self._get_monitor_count else 0
+            for i in range(count):
+                action = menu.addAction(f"View Monitor {i + 1}")
+                action.triggered.connect(lambda checked=False, idx=i: self._on_view_screen(self.client_id, idx))
+                has_items = True
+
+        if self._on_power_action:
+            if has_items:
+                menu.addSeparator()
+            logoff = menu.addAction("Log Off")
+            logoff.triggered.connect(lambda: self._on_power_action(self.client_id, "logoff"))
+            restart = menu.addAction("Restart")
+            restart.triggered.connect(lambda: self._on_power_action(self.client_id, "restart"))
+            shutdown = menu.addAction("Shut Down")
+            shutdown.triggered.connect(lambda: self._on_power_action(self.client_id, "shutdown"))
+            has_items = True
+
+        if not has_items:
+            return
         menu.exec(self.mapToGlobal(pos))
 
 
@@ -65,11 +81,13 @@ class ClientListWidget(QWidget):
         on_disconnect: Callable[[str], None],
         get_monitor_count: Optional[Callable[[str], int]] = None,
         on_view_screen: Optional[Callable[[str, int], None]] = None,
+        on_power_action: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         super().__init__()
         self._on_disconnect = on_disconnect
         self._get_monitor_count = get_monitor_count
         self._on_view_screen = on_view_screen
+        self._on_power_action = on_power_action
         self._rows: dict[str, ClientRow] = {}
 
         outer = QVBoxLayout(self)
@@ -97,6 +115,7 @@ class ClientListWidget(QWidget):
             client_id, hostname, self._on_disconnect,
             get_monitor_count=self._get_monitor_count,
             on_view_screen=self._on_view_screen,
+            on_power_action=self._on_power_action,
         )
         self._rows[client_id] = row
         self._list_layout.addWidget(row)
